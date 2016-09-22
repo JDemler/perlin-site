@@ -1,19 +1,29 @@
 {{ partial "header.html" . }}
 
 <main class="content" role="main">
-
-  <div class="archive">
-    {{ range .Data.Pages.GroupByDate "2006"  }}
-    <h2 class="archive-title">{{ .Key }}</h2>
-    {{ range where .Pages "Section" "post" }}
-    <article class="archive-item">
-      <a href="{{ .Permalink }}" class="archive-item-link">{{ .Title }}</a>
-      <span class="archive-item-date">
-        {{ .Date.Format "January 2, 2006" }}
-      </span>
-    </article>
-    {{ end }}
-    {{ end }}
+  <div class="leftcolumn">
+    {{ range where .Data.Pages "Params.hans" "peter"}}
+      {{ .Content }}
+    {{ end }}    
+  </div>
+  <div class="rightcolum">
+    <div class="archive">
+      {{range .Data.Pages.GroupByParam "content_type"}}
+      <h2 class="archive-title">{{ .Key }}</h2>
+      {{ range .Pages }}
+      <article class="archive-item">
+        <a href="{{ .Permalink }}" class="archive-item-link">{{ .Title }}</a>
+         <span class="archive-item-date">
+           {{ if eq .Params.content_type "Guided Hikes" }}
+           {{ .Params.version }}
+           {{ else }}
+           {{ .Date.Format "Jan 2" }}
+           {{end}}
+        </span>
+      </article>
+      {{end}}
+      {{end}}
+  </div>
   </div>
 
 </main>
