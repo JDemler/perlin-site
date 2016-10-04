@@ -2,6 +2,8 @@ baseurl = "https://www.perlin-ir.org/"
 languageCode = "en-us"
 title = "Perlin - Information Retrieval"
 theme = "hugo-lithium-theme"
+PygmentsCodeFences = true
+pygmentsstyle = "native"
 
 [[menu.main]]
     name = "Documentation"

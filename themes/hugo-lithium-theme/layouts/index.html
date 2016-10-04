@@ -8,7 +8,7 @@
   </div>
   <div class="rightcolum">
     <div class="archive">
-      {{range .Data.Pages.GroupByParam "content_type"}}
+      {{ range .Data.Pages.GroupByParam "content_type"}}
       <h2 class="archive-title">{{ .Key }}</h2>
       {{ range .Pages }}
       <article class="archive-item">

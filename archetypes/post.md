@@ -1,3 +1,3 @@
 +++
-content_type = "News"
+content_type = "Blog"
 +++

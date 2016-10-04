@@ -1,13 +1,13 @@
 <?xml version="1.0" encoding="utf-8" standalone="yes" ?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
   <channel>
-    <title>Perlin - Information Retrieval</title>
-    <link>https://www.perlin-ir.org/</link>
-    <description>Recent content on Perlin - Information Retrieval</description>
+    <title>Posts on Perlin - Information Retrieval</title>
+    <link>https://www.perlin-ir.org/post/</link>
+    <description>Recent content in Posts on Perlin - Information Retrieval</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
     <lastBuildDate>Tue, 04 Oct 2016 10:54:49 +0200</lastBuildDate>
-    <atom:link href="https://www.perlin-ir.org/index.xml" rel="self" type="application/rss+xml" />
+    <atom:link href="https://www.perlin-ir.org/post/index.xml" rel="self" type="application/rss+xml" />
     
     <item>
       <title>Simplify Indexing</title>
@@ -147,45 +147,6 @@ test index_100mb ... bench: 3,923,865,654 ns/iter (+/- 313,731,489)
 test index_10mb  ... bench: 474,433,864 ns/iter (+/- 31,567,143)
 test index_1mb   ... bench:  37,581,279 ns/iter (+/- 2,284,396)
 &lt;/code&gt;&lt;/pre&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>Perlin v0.1</title>
-      <link>https://www.perlin-ir.org/news/release-v0.1/</link>
-      <pubDate>Thu, 22 Sep 2016 16:51:26 +0200</pubDate>
-      
-      <guid>https://www.perlin-ir.org/news/release-v0.1/</guid>
-      <description>&lt;p&gt;Perlin received its &lt;a href=&#34;https://github.com/JDemler/perlin/releases/tag/v0.1&#34;&gt;first release&lt;/a&gt; today.&lt;/p&gt;
-
-&lt;p&gt;In version 0.1 boolean retrieval including phrase queries, filters and persistence on disk, is supported.&lt;/p&gt;
-
-&lt;p&gt;The motivation of this release is not to provide usefull functionality but mainly to get feedback on usage and clearness of the library. There are still some issues to be resolved for perlin to be a good information retrieval library for boolean retrieval.&lt;/p&gt;
-
-&lt;p&gt;These issues are:&lt;/p&gt;
-
-&lt;ul&gt;
-&lt;li&gt;Indexing is incredibly slow&lt;/li&gt;
-&lt;li&gt;Loading indices from corrupted data does not yield good or useful errors&lt;/li&gt;
-&lt;li&gt;Data in RAM is not compressed&lt;/li&gt;
-&lt;li&gt;Indices are non mutable. Once they are create documents can not be added or removed&lt;/li&gt;
-&lt;/ul&gt;
-
-&lt;p&gt;They will be resolved with perlin 0.2.&lt;/p&gt;
-</description>
-    </item>
-    
-    <item>
-      <title>index</title>
-      <link>https://www.perlin-ir.org/page/</link>
-      <pubDate>Wed, 21 Sep 2016 19:02:25 +0200</pubDate>
-      
-      <guid>https://www.perlin-ir.org/page/</guid>
-      <description>
-
-&lt;h2 id=&#34;a-lazy-zero-allocation-and-data-agnostic-information-retrieval-library&#34;&gt;A lazy, zero-allocation and data-agnostic Information Retrieval library&lt;/h2&gt;
-
-&lt;hr /&gt;
 </description>
     </item>
     

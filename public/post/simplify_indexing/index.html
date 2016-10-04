@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+<title>Simplify Indexing - Perlin - Information Retrieval</title>
+<meta property="og:title" content="Simplify Indexing - Perlin - Information Retrieval">
+
+
+
+  
+
+
+
+
+
+
+<link rel="stylesheet" href="https://www.perlin-ir.org/css/main.css" media="all">
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header class="header">
+        <nav class="nav">
+  <a href="https://www.perlin-ir.org/" class="home-link">Perlin</a>
+
+  <ul class="nav-links">
+    
+    <li><a href="https://doc.perlin-ir.org/">Documentation</a></li>
+    
+    <li><a href="https://github.com/JDemler/perlin">GitHub</a></li>
+    
+  </ul>
+</nav>
+
+      </header>
+
+
+<main class="content" role="main">
+
+  <article class="article">
+    <h1 class="article-title">Simplify Indexing</h1>
+
+    
+    <span class="article-date">October 4, 2016</span>
+    
+
+    <div class="article-content">
+      
+
+<p>In the release notes of <a href="/news/release-v0.1/">Perlin v0.1</a> we state that &ldquo;indexing is incredibly slow&rdquo;.<br />
+Having worked on this for the last week I have to rephrase that statement into &ldquo;indexing benchmarks are incredibly wrong&rdquo;.</p>
+
+<p>This post tells the story of how indexing benchmarks were flawed, how they were fixed and finally how I got something out of it and improved indexing speed.</p>
+
+<h2 id="the-benchmark-v0-1">The Benchmark [v0.1]</h2>
+
+<p>The idea of the indexing benchmarks are straightforward: create random documents with random terms with term count and term distribution being similar to the ones in natural language. In other words: the number of distinct terms is given by <a href="https://en.wikipedia.org/wiki/Heaps%27_law">Heaps&rsquo; Law</a> and the document terms will be randomly distributed using the <a href="https://en.wikipedia.org/wiki/Zipf%27s_law">Zipf&rsquo;s Law </a>. <br />
+For more information why these two laws apply read <a href="http://nlp.stanford.edu/IR-book/pdf/irbookonlinereading.pdf#section.5.1">chapter 5.1</a> of the IR-Book.</p>
+
+<p><strong>Let&rsquo;s see some code!</strong></p>
+
+<p>Implementation of Heaps&rsquo; Law:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">voc_size(k:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">b:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">tokens:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">((k</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(tokens</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">).powf(b))</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Zipf&rsquo;s Law is implemented by a generating iterator:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #cd2828; font-weight: bold">#[derive(Clone)]</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">struct</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">voc_size:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">factor:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">acc_probs:</span><span style="color: #666666"> </span><span style="color: #24909d">Box</span><span style="color: #d0d0d0">&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">&gt;&gt;,</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+
+<span style="color: #6ab825; font-weight: bold">impl</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">new(voc_size:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Self</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">res</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">voc_size:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">voc_size,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">factor:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(</span><span style="color: #3677a9">1.78</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*</span><span style="color: #666666"> </span><span style="color: #d0d0d0">voc_size</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">).ln(),</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">acc_probs:</span><span style="color: #666666"> </span><span style="color: #24909d">Box</span><span style="color: #d0d0d0">::new(</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">::with_capacity(voc_size)),</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">};</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">acc</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #3677a9">0.0</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">i</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">in</span><span style="color: #666666"> </span><span style="color: #3677a9">1</span><span style="color: #d0d0d0">..voc_size</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">acc</span><span style="color: #666666"> </span><span style="color: #d0d0d0">+=</span><span style="color: #666666"> </span><span style="color: #3677a9">1.0</span><span style="color: #666666"> </span><span style="color: #d0d0d0">/</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(i</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*</span><span style="color: #666666"> </span><span style="color: #d0d0d0">res.factor);</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">res.acc_probs.push(acc);</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">res</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+
+<span style="color: #6ab825; font-weight: bold">impl</span><span style="color: #d0d0d0">&lt;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Iterator</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">type</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Item</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Option</span><span style="color: #d0d0d0">&lt;Self::Item&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">dice</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">rand::random::&lt;</span><span style="color: #6ab825; font-weight: bold">f64</span><span style="color: #d0d0d0">&gt;();</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">c</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">loop</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">dice</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&lt;</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.acc_probs[c]</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #24909d">Some</span><span style="color: #d0d0d0">(c);</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">c</span><span style="color: #666666"> </span><span style="color: #d0d0d0">+=</span><span style="color: #666666"> </span><span style="color: #3677a9">1</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Probably you already noticed the problem. But lets see how these were used to benchmark indexing speed:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #cd2828; font-weight: bold">#[bench]</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">index_100kb(b:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Bencher)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">rng</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator::new(voc_size(</span><span style="color: #3677a9">45</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">0.5</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">12500</span><span style="color: #d0d0d0">));</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">b.iter(||</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">count</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">test::black_box(</span><span style="color: #3677a9">100</span><span style="color: #d0d0d0">);</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">IndexBuilder::&lt;_,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">RamStorage&lt;_&gt;&gt;::new().create((</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">..count).map(|_|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">rng.take(</span><span style="color: #3677a9">125</span><span style="color: #d0d0d0">)));</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">});</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>A new generator is created and for every document it generates 125 terms.
+The generator is not fast: it is not optimized and uses cryptographically safe randomness which is absolutely unneccersarry for this task. This kills the results of the benchmark: as the generator is lazy, the generation of the terms happen during the indexing and the generator is about an order of magnitude slower than indexing.
+From the results of this benchmark I concluded &ldquo;indexing is incredibly slow&rdquo;.</p>
+
+<h2 id="fixed-benchmark">Fixed Benchmark</h2>
+
+<p>The solution to this problem is simple: generate the documents before the indexing and do it only once, not every iteration:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #d0d0d0">lazy_static!{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">static</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">ref</span><span style="color: #666666"> </span><span style="color: #d0d0d0">COLLECTIONS:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">[</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">&gt;&gt;;</span><span style="color: #666666"> </span><span style="color: #3677a9">4</span><span style="color: #d0d0d0">]</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">[</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">(</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">..</span><span style="color: #3677a9">100</span><span style="color: #d0d0d0">).map(|_|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator::new(voc_size(</span><span style="color: #3677a9">45</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">0.5</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">12500</span><span style="color: #d0d0d0">)).take(</span><span style="color: #3677a9">125</span><span style="color: #d0d0d0">).collect()).collect(),</span><span style="color: #999999; font-style: italic">//100kb</span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">(</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">..</span><span style="color: #3677a9">1000</span><span style="color: #d0d0d0">).map(|_|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator::new(voc_size(</span><span style="color: #3677a9">45</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">0.5</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">125000</span><span style="color: #d0d0d0">)).take(</span><span style="color: #3677a9">125</span><span style="color: #d0d0d0">).collect()).collect(),</span><span style="color: #999999; font-style: italic">//1MB</span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">(</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">..</span><span style="color: #3677a9">10000</span><span style="color: #d0d0d0">).map(|_|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator::new(voc_size(</span><span style="color: #3677a9">45</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">0.5</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">1_250_000</span><span style="color: #d0d0d0">)).take(</span><span style="color: #3677a9">125</span><span style="color: #d0d0d0">).collect()).collect(),</span><span style="color: #999999; font-style: italic">//10MB</span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">(</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">..</span><span style="color: #3677a9">100000</span><span style="color: #d0d0d0">).map(|_|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ZipfGenerator::new(voc_size(</span><span style="color: #3677a9">45</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">0.5</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #3677a9">1_500_000</span><span style="color: #d0d0d0">)).take(</span><span style="color: #3677a9">125</span><span style="color: #d0d0d0">).collect()).collect(),</span><span style="color: #999999; font-style: italic">//100MB</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">];</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+
+<span style="color: #cd2828; font-weight: bold">#[bench]</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">index_100mb(b:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Bencher)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">b.iter(||</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">test::black_box(&amp;IndexBuilder::&lt;_,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">RamStorage&lt;_&gt;&gt;::new().create(COLLECTIONS[</span><span style="color: #3677a9">3</span><span style="color: #d0d0d0">].iter().map(|i|</span><span style="color: #666666"> </span><span style="color: #d0d0d0">i.iter())));</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">});</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<h2 id="improve-indexing">Improve Indexing</h2>
+
+<p>Now, with sound and realistic indexing benchmarks, I noticed. Indexing is not slow. Perlin 0.1 indexes at least 12.5 Mb/s:</p>
+
+<pre><code>running 4 tests
+test index_100kb ... bench:   3,767,254 ns/iter (+/- 178,005)
+test index_100mb ... bench: 7,770,690,219 ns/iter (+/- 652,561,624)
+test index_10mb  ... bench: 665,334,106 ns/iter (+/- 103,991,620)
+test index_1mb   ... bench:  42,403,164 ns/iter (+/- 2,008,641)
+</code></pre>
+
+<p>My previous attempts to parallelize indexing yielded similar results and seemed a bit pointless after discovering that the benchmarks were flawed.
+Nevertheless, my continous work on the indexing process grew an idea of how indexing could be simplified.
+Perlin 0.1 indexes into two very basic containers:
+A dictionary that maps a term to a term id and an inverse index, which contains the mapping between term id and document id. These were both implemented as <code>BTreeMap</code>s:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #999999; font-style: italic">//Term to term ID</span>
+<span style="color: #d0d0d0">BTreeMap&lt;TTerm,</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"></span>
+<span style="color: #999999; font-style: italic">//Term ID to list of document ID and position pairs called `Listing`</span>
+<span style="color: #d0d0d0">BTreeMap&lt;</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #d0d0d0">&gt;)&gt;&gt;</span><span style="color: #666666"> </span>
+</pre></div>
+
+<p>Term IDs are assigned in ascending order, meaning that if we have 1000 terms the corresponding term ids would be 0 to 999. When we turn that assumption into a requirement, the second BTreeMap becomes totally useless and can be replaced by a simple vector:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #d0d0d0">&gt;)&gt;&gt;</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>But where did the term id go? It is encoded in the index of the listing.</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #d0d0d0">inv_index[</span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">]</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>gets us the listing for term id 0. Easy and about two times faster:</p>
+
+<pre><code>running 4 tests
+test index_100kb ... bench:   2,845,210 ns/iter (+/- 17,947)
+test index_100mb ... bench: 3,923,865,654 ns/iter (+/- 313,731,489)
+test index_10mb  ... bench: 474,433,864 ns/iter (+/- 31,567,143)
+test index_1mb   ... bench:  37,581,279 ns/iter (+/- 2,284,396)
+</code></pre>
+
+    </div>
+  </article>
+
+</main>
+
+      <footer class="footer">
+        <ul class="footer-links">
+
+        </ul>
+      </footer>
+
+    </div>
+  </body>
+</html>
+

@@ -1,0 +1,26 @@
+* Indexing Benchmark
+** ChunkedList
+*** 1e8278e 
+running 3 tests
+test index_100kb ... bench:   3,887,964 ns/iter (+/- 150,349)
+test index_10mb  ... bench: 544,717,565 ns/iter (+/- 35,294,511)
+test index_1mb   ... bench:  44,500,864 ns/iter (+/- 5,414,371)
+** Simplified Indexing
+*** bb796ee ~25mb/s 1 Thread
+running 4 tests
+test index_100kb ... bench:   2,845,210 ns/iter (+/- 17,947)
+test index_100mb ... bench: 3,923,865,654 ns/iter (+/- 313,731,489)
+test index_10mb  ... bench: 474,433,864 ns/iter (+/- 31,567,143)
+test index_1mb   ... bench:  37,581,279 ns/iter (+/- 2,284,396)
+*** 7d3457e ~20mb/s 1 Thread
+running 3 tests
+test index_100kb ... bench:   4,605,657 ns/iter (+/- 61,807)
+test index_10mb  ... bench: 483,464,894 ns/iter (+/- 44,082,738)
+test index_1mb   ... bench:  40,494,120 ns/iter (+/- 233,552)
+** Old version
+*** 77b5891
+running 4 tests
+test index_100kb ... bench:   3,767,254 ns/iter (+/- 178,005)
+test index_100mb ... bench: 7,770,690,219 ns/iter (+/- 652,561,624)
+test index_10mb  ... bench: 665,334,106 ns/iter (+/- 103,991,620)
+test index_1mb   ... bench:  42,403,164 ns/iter (+/- 2,008,641)
