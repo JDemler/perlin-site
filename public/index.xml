@@ -160,7 +160,8 @@ test index_1mb   ... bench:  37,581,279 ns/iter (+/- 2,284,396)
 
 &lt;p&gt;In version 0.1 boolean retrieval including phrase queries, filters and persistence on disk, is supported.&lt;/p&gt;
 
-&lt;p&gt;The motivation of this release is not to provide usefull functionality but mainly to get feedback on usage and clearness of the library. There are still some issues to be resolved for perlin to be a good information retrieval library for boolean retrieval.&lt;/p&gt;
+&lt;p&gt;The motivation of this release is not to provide usefull functionality but mainly to get feedback on usage and clearness of the library. &lt;br /&gt;
+There are still some issues to be resolved for perlin to be a good information retrieval library for boolean retrieval.&lt;/p&gt;
 
 &lt;p&gt;These issues are:&lt;/p&gt;
 
