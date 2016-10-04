@@ -7,7 +7,8 @@ Perlin received its [first release](https://github.com/JDemler/perlin/releases/t
 
 In version 0.1 boolean retrieval including phrase queries, filters and persistence on disk, is supported.
 
-The motivation of this release is not to provide usefull functionality but mainly to get feedback on usage and clearness of the library. There are still some issues to be resolved for perlin to be a good information retrieval library for boolean retrieval.
+The motivation of this release is not to provide usefull functionality but mainly to get feedback on usage and clearness of the library. \
+There are still some issues to be resolved for perlin to be a good information retrieval library for boolean retrieval.
 
 These issues are:
 
