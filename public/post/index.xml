@@ -90,7 +90,8 @@ At a rate of 57Mb/s
 &lt;p&gt;That looks bad. ~50% frontend and ~30% backend cycles idle. What does that mean? &lt;a href=&#34;https://stackoverflow.com/questions/22165299/what-are-stalled-cycles-frontend-and-stalled-cycles-backend-in-perf-stat-resul&#34;&gt;This SO-Answer&lt;/a&gt; tells us that it might be related to cache misses and memory access.
 Might be:&lt;/p&gt;
 
-&lt;pre&gt;&lt;code&gt;perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
+&lt;pre&gt;&lt;code&gt;perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,
+             L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
 
 DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 3580ms
 At a rate of 55Mb/s
@@ -110,16 +111,16 @@ At a rate of 55Mb/s
 
 &lt;p&gt;(L1-icache and -dcache are L1 instruction and data cache, LLC is the last-level-cache (in my case L3). Misses in the last-level-cache result in direct memory access)&lt;/p&gt;
 
-&lt;p&gt;Instruction cache seems to be ok. Below 1% L1-icache misses.
-But L1-dcache and LLC are bad. According to &lt;a href=&#34;https://gist.github.com/jboner/2841832&#34;&gt;latency numbers every programmer should know&lt;/a&gt; 56 million LLC-load-misses are equal to &lt;a href=&#34;http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6&#34;&gt;5.6 secods&lt;/a&gt; of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 secods. That&amp;rsquo;s about seventy percent of our indexing time!
+&lt;p&gt;Instruction cache seems to be OK. Below 1% L1-icache misses.
+But L1-dcache and LLC are bad. According to &lt;a href=&#34;https://gist.github.com/jboner/2841832&#34;&gt;latency numbers every programmer should know&lt;/a&gt; 56 million LLC-load-misses are equal to &lt;a href=&#34;http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6&#34;&gt;5.6 seconds&lt;/a&gt; of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 seconds. That&amp;rsquo;s about seventy percent of our indexing time!
 I&amp;rsquo;m interested in the details now. By sorting the chunks by &lt;code&gt;term_id&lt;/code&gt; before indexing them, I thought, the access pattern to memory would be much better.&lt;/p&gt;
 
 &lt;p&gt;But let me explain the details first:&lt;/p&gt;
 &lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// This code can be found in perlin::index::boolean_index::mod.rs:353&lt;/span&gt;
 &lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Task 3:&lt;/span&gt;
 &lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// receives sorted listings. merges them into the complete inverted index &lt;/span&gt;
-&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// `Listing` is an alias for Vec&amp;lt;(u64, Vec&amp;lt;u32&amp;gt;)&amp;gt; or in english: &lt;/span&gt;
-&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// A list of document_ids with the positions the term occured in these documents&lt;/span&gt;
+&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// `Listing` is an alias for Vec&amp;lt;(u64, Vec&amp;lt;u32&amp;gt;)&amp;gt; or in English: &lt;/span&gt;
+&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// A list of document_ids with the positions the term occurred in these documents&lt;/span&gt;
 &lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;invert_index(grouped_chunks:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;mpsc::Receiver&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;Listing)&amp;gt;&amp;gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Result&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;Listing&amp;gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
 &lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;inv_index:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;Listing&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;::with_capacity(&lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;8192&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
 &lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;while&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Ok&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(chunk)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;grouped_chunks.recv()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
@@ -174,7 +175,7 @@ Let&amp;rsquo;s have a look!&lt;/p&gt;
 
 &lt;h2 id=&#34;tracking-memory-access&#34;&gt;Tracking Memory Access&lt;/h2&gt;
 
-&lt;p&gt;My idea was to log memory acces by logging the memory locations of the postings.&lt;/p&gt;
+&lt;p&gt;My idea was to log memory access by logging the memory locations of the postings.&lt;/p&gt;
 &lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;println!(&lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;{:?}:{}|{}|{}&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;inv_index[uterm_id].as_ptr(),&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;uterm_id,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;listing_len,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;new);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
 &lt;/pre&gt;&lt;/div&gt;
 
@@ -246,7 +247,7 @@ It starts similar and everything is fine the first few chunks. Then fireworks st
 312320:498|1|false
 &lt;/code&gt;&lt;/pre&gt;
 
-&lt;p&gt;This is very bad. Random Access! These differences in memory location are beyond any cacheline or page.
+&lt;p&gt;This is very bad. Random Access! These differences in memory location are beyond any cache-line or page.
 This has to be the problem why cycles are stalled and why cache-loads are missed.
 Why does this happen? &lt;br /&gt;
 Listings grow during the indexing process. And thus they need to be reallocated. Adjacent space is already occupied so it is allocated somewhere else.&lt;br /&gt;

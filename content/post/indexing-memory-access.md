@@ -79,7 +79,8 @@ That looks bad. ~50% frontend and ~30% backend cycles idle. What does that mean?
 Might be:
 
 ```
-perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
+perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,
+             L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
 
 DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 3580ms
 At a rate of 55Mb/s
@@ -98,8 +99,8 @@ At a rate of 55Mb/s
 ```
 (L1-icache and -dcache are L1 instruction and data cache, LLC is the last-level-cache (in my case L3). Misses in the last-level-cache result in direct memory access)
 
-Instruction cache seems to be ok. Below 1% L1-icache misses.
-But L1-dcache and LLC are bad. According to [latency numbers every programmer should know](https://gist.github.com/jboner/2841832) 56 million LLC-load-misses are equal to [5.6 secods](http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6) of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 secods. That's about seventy percent of our indexing time!
+Instruction cache seems to be OK. Below 1% L1-icache misses.
+But L1-dcache and LLC are bad. According to [latency numbers every programmer should know](https://gist.github.com/jboner/2841832) 56 million LLC-load-misses are equal to [5.6 seconds](http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6) of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 seconds. That's about seventy percent of our indexing time!
 I'm interested in the details now. By sorting the chunks by `term_id` before indexing them, I thought, the access pattern to memory would be much better.
 
 But let me explain the details first:
@@ -108,8 +109,8 @@ But let me explain the details first:
 // This code can be found in perlin::index::boolean_index::mod.rs:353
 // Task 3:
 // receives sorted listings. merges them into the complete inverted index 
-// `Listing` is an alias for Vec<(u64, Vec<u32>)> or in english: 
-// A list of document_ids with the positions the term occured in these documents
+// `Listing` is an alias for Vec<(u64, Vec<u32>)> or in English: 
+// A list of document_ids with the positions the term occurred in these documents
 fn invert_index(grouped_chunks: mpsc::Receiver<Vec<(u64, Listing)>>) -> Result<Vec<Listing>> {
     let mut inv_index: Vec<Listing> = Vec::with_capacity(8192);
     while let Ok(chunk) = grouped_chunks.recv() {
@@ -164,7 +165,7 @@ Let's have a look!
 
 ## Tracking Memory Access
 
-My idea was to log memory acces by logging the memory locations of the postings. 
+My idea was to log memory access by logging the memory locations of the postings. 
 ``` rust
     println!("{:?}:{}|{}|{}", inv_index[uterm_id].as_ptr(), uterm_id, listing_len, new);
 ```
@@ -237,7 +238,7 @@ It starts similar and everything is fine the first few chunks. Then fireworks st
 -307200:493|1|false
 312320:498|1|false
 ```
-This is very bad. Random Access! These differences in memory location are beyond any cacheline or page.
+This is very bad. Random Access! These differences in memory location are beyond any cache-line or page.
 This has to be the problem why cycles are stalled and why cache-loads are missed.
 Why does this happen? \
 Listings grow during the indexing process. And thus they need to be reallocated. Adjacent space is already occupied so it is allocated somewhere else.\

@@ -123,7 +123,8 @@ At a rate of 57Mb/s
 <p>That looks bad. ~50% frontend and ~30% backend cycles idle. What does that mean? <a href="https://stackoverflow.com/questions/22165299/what-are-stalled-cycles-frontend-and-stalled-cycles-backend-in-perf-stat-resul">This SO-Answer</a> tells us that it might be related to cache misses and memory access.
 Might be:</p>
 
-<pre><code>perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
+<pre><code>perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,
+             L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
 
 DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 3580ms
 At a rate of 55Mb/s
@@ -143,16 +144,16 @@ At a rate of 55Mb/s
 
 <p>(L1-icache and -dcache are L1 instruction and data cache, LLC is the last-level-cache (in my case L3). Misses in the last-level-cache result in direct memory access)</p>
 
-<p>Instruction cache seems to be ok. Below 1% L1-icache misses.
-But L1-dcache and LLC are bad. According to <a href="https://gist.github.com/jboner/2841832">latency numbers every programmer should know</a> 56 million LLC-load-misses are equal to <a href="http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6">5.6 secods</a> of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 secods. That&rsquo;s about seventy percent of our indexing time!
+<p>Instruction cache seems to be OK. Below 1% L1-icache misses.
+But L1-dcache and LLC are bad. According to <a href="https://gist.github.com/jboner/2841832">latency numbers every programmer should know</a> 56 million LLC-load-misses are equal to <a href="http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6">5.6 seconds</a> of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 seconds. That&rsquo;s about seventy percent of our indexing time!
 I&rsquo;m interested in the details now. By sorting the chunks by <code>term_id</code> before indexing them, I thought, the access pattern to memory would be much better.</p>
 
 <p>But let me explain the details first:</p>
 <div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #999999; font-style: italic">// This code can be found in perlin::index::boolean_index::mod.rs:353</span>
 <span style="color: #999999; font-style: italic">// Task 3:</span>
 <span style="color: #999999; font-style: italic">// receives sorted listings. merges them into the complete inverted index </span>
-<span style="color: #999999; font-style: italic">// `Listing` is an alias for Vec&lt;(u64, Vec&lt;u32&gt;)&gt; or in english: </span>
-<span style="color: #999999; font-style: italic">// A list of document_ids with the positions the term occured in these documents</span>
+<span style="color: #999999; font-style: italic">// `Listing` is an alias for Vec&lt;(u64, Vec&lt;u32&gt;)&gt; or in English: </span>
+<span style="color: #999999; font-style: italic">// A list of document_ids with the positions the term occurred in these documents</span>
 <span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">invert_index(grouped_chunks:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">mpsc::Receiver&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Listing)&gt;&gt;)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Result</span><span style="color: #d0d0d0">&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;Listing&gt;&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
 <span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">inv_index:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;Listing&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">::with_capacity(</span><span style="color: #3677a9">8192</span><span style="color: #d0d0d0">);</span><span style="color: #666666"></span>
 <span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">while</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(chunk)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">grouped_chunks.recv()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
@@ -207,7 +208,7 @@ Let&rsquo;s have a look!</p>
 
 <h2 id="tracking-memory-access">Tracking Memory Access</h2>
 
-<p>My idea was to log memory acces by logging the memory locations of the postings.</p>
+<p>My idea was to log memory access by logging the memory locations of the postings.</p>
 <div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #666666">    </span><span style="color: #d0d0d0">println!(</span><span style="color: #ed9d13">&quot;{:?}:{}|{}|{}&quot;</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">inv_index[uterm_id].as_ptr(),</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing_len,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">new);</span><span style="color: #666666"></span>
 </pre></div>
 
@@ -279,7 +280,7 @@ It starts similar and everything is fine the first few chunks. Then fireworks st
 312320:498|1|false
 </code></pre>
 
-<p>This is very bad. Random Access! These differences in memory location are beyond any cacheline or page.
+<p>This is very bad. Random Access! These differences in memory location are beyond any cache-line or page.
 This has to be the problem why cycles are stalled and why cache-loads are missed.
 Why does this happen? <br />
 Listings grow during the indexing process. And thus they need to be reallocated. Adjacent space is already occupied so it is allocated somewhere else.<br />

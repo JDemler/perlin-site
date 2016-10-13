@@ -75,6 +75,18 @@ h6 {
     color: #222;
 }
 
+pre {
+    padding: 10px;
+    border: 2px solid #ddd;
+    background-color: #eee;
+}
+
+.highlight pre{
+    border: none;
+    padding: 0;
+    background-color: #202020;
+}
+
 a {
     outline: none;
 }
