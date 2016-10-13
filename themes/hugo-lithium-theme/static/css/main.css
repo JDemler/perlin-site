@@ -161,13 +161,13 @@ a {
 
 .leftcolumn {
     float: left;
-    width: 70%;
+    width: 60%;
     font-size: 12px;
 }
 
 .rightcolum {
     float: right;
-    width: 25%;
+    width: 35%;
 }
 
 
