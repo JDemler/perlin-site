@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+<title>Indexing: Memory Access - Perlin - Information Retrieval</title>
+<meta property="og:title" content="Indexing: Memory Access - Perlin - Information Retrieval">
+
+
+
+  
+
+
+
+
+
+
+<link rel="stylesheet" href="https://www.perlin-ir.org/css/main.css" media="all">
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header class="header">
+        <nav class="nav">
+  <a href="https://www.perlin-ir.org/" class="home-link">Perlin</a>
+
+  <ul class="nav-links">
+    
+    <li><a href="https://doc.perlin-ir.org/">Documentation</a></li>
+    
+    <li><a href="https://github.com/JDemler/perlin">GitHub</a></li>
+    
+  </ul>
+</nav>
+
+      </header>
+
+
+<main class="content" role="main">
+
+  <article class="article">
+    <h1 class="article-title">Indexing: Memory Access</h1>
+
+    
+    <span class="article-date">October 13, 2016</span>
+    
+
+    <div class="article-content">
+      
+
+<p><a href="/post/simplify_indexing/">Last blog post</a> dealt with benchmarking indexing speed and improving it.
+Since then indexing was further improved by about 2x and I learned about what is limiting the indexing speed.</p>
+
+<p>This post will explain you to the improved indexing algorithm and then walk through the process of discovering the limiting factor (spoiler alert: It&rsquo;s memory access).</p>
+
+<h2 id="improved-indexing">Improved Indexing</h2>
+
+<p>Up until now, indexing in perlin was single threaded and worked basically like this:</p>
+
+<pre><code>for every document
+    for every term
+        assign term_id to term
+        add document_id and term_position to the inverted index
+</code></pre>
+
+<p>I decided that splitting up this task was possible and would result in faster indexing speed.
+Ideally I wanted it to not share data-structures so it could be non-locking.
+So the resulting algorithm works like this:</p>
+
+<pre><code>task_1: Assigning term_ids to term
+for every document
+    for every term
+        assign term_id to term
+        store (term_id, document_id, term_position) in buffer
+    send buffer to task 2
+    
+task_2: sort and group triplets
+for every chunk
+    sort chunk by term_id
+    group chunk by term_id
+    send sorted and grouped chunk to task_3
+    
+task_3: Insert the resulting listings into the inverted index
+for every sorted and grouped chunk
+    append or push (document_id, &lt;term_positions&gt;) to term_id entry in inverted index
+</code></pre>
+
+<p>No data-structures are shared; Threads communicate using <a href="https://doc.rust-lang.org/std/sync/mpsc/fn.channel.html">mpsc::channel</a>;
+In my first attempt task 2 and 3 where not yet split up and took clearly longer than task 1.
+After the split up task 1 was limiting; it currently uses <code>BTreeMap</code> to store the vocabulary and assign term_ids to terms. <br />
+Nevertheless, this algorithm is about two times faster for large collections (~40-50Mb/s vs. ~25Mb/s). If you are interested in measuring yourself please have a look at the <a href="https://github.com/JDemler/perlin-testbench">perlin-testbench</a> repository.</p>
+
+<h2 id="digging-deeper">Digging deeper</h2>
+
+<p>Surely better data-structures than <code>BTreeMap</code> can be found to solve task 1s problem. First tests show that <code>HashMap</code> is faster. But what is the next limiting factor?
+Let&rsquo;s have a look at what perf has to say:</p>
+
+<pre><code>perf stat ./testbench ~/test.bin
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 3477ms
+At a rate of 57Mb/s
+100000
+
+ Performance counter stats for './testbench /home/jdemler/test.bin':
+
+      11593.721335      task-clock:u (msec)       #    1.935 CPUs utilized          
+                 0      context-switches:u        #    0.000 K/sec                  
+                 0      cpu-migrations:u          #    0.000 K/sec                  
+            20,901      page-faults:u             #    0.002 M/sec                  
+    29,994,414,061      cycles:u                  #    2.587 GHz                    
+    16,401,507,550      stalled-cycles-frontend:u #   54.68% frontend cycles idle   
+     9,220,804,434      stalled-cycles-backend:u  #   30.74% backend cycles idle    
+    36,189,798,943      instructions:u            #    1.21  insn per cycle         
+                                                  #    0.45  stalled cycles per insn
+     6,769,146,655      branches:u                #  583.863 M/sec                  
+       225,139,782      branch-misses:u           #    3.33% of all branches        
+
+       5.991013316 seconds time elapsed
+</code></pre>
+
+<p>That looks bad. ~50% frontend and ~30% backend cycles idle. What does that mean? <a href="https://stackoverflow.com/questions/22165299/what-are-stalled-cycles-frontend-and-stalled-cycles-backend-in-perf-stat-resul">This SO-Answer</a> tells us that it might be related to cache misses and memory access.
+Might be:</p>
+
+<pre><code>perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,LLC-loads,LLC-load-misses ./testbench ~/test.bin
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 3580ms
+At a rate of 55Mb/s
+100000
+
+ Performance counter stats for './testbench /home/jdemler/test.bin':
+
+    14,758,826,574      L1-icache-loads:u                                             (66.70%)
+        75,199,038      L1-icache-load-misses:u                                       (66.34%)
+     7,729,428,780      L1-dcache-loads:u                                             (66.53%)
+       396,842,316      L1-dcache-load-misses:u   #    5.13% of all L1-dcache hits    (66.69%)
+       150,157,164      LLC-loads:u                                                   (66.79%)
+        56,172,416      LLC-load-misses:u         #    0.75% of all LL-cache hits     (66.99%)
+
+       7.347828777 seconds time elapsed
+</code></pre>
+
+<p>(L1-icache and -dcache are L1 instruction and data cache, LLC is the last-level-cache (in my case L3). Misses in the last-level-cache result in direct memory access)</p>
+
+<p>Instruction cache seems to be ok. Below 1% L1-icache misses.
+But L1-dcache and LLC are bad. According to <a href="https://gist.github.com/jboner/2841832">latency numbers every programmer should know</a> 56 million LLC-load-misses are equal to <a href="http://www.wolframalpha.com/input/?i=1*10%5E-7+*+56*10%5E6">5.6 secods</a> of waiting. Please note, that deallocation of the index is measured, too. Measuring only the indexing part results in a waiting time for memory of about 2.5 secods. That&rsquo;s about seventy percent of our indexing time!
+I&rsquo;m interested in the details now. By sorting the chunks by <code>term_id</code> before indexing them, I thought, the access pattern to memory would be much better.</p>
+
+<p>But let me explain the details first:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #999999; font-style: italic">// This code can be found in perlin::index::boolean_index::mod.rs:353</span>
+<span style="color: #999999; font-style: italic">// Task 3:</span>
+<span style="color: #999999; font-style: italic">// receives sorted listings. merges them into the complete inverted index </span>
+<span style="color: #999999; font-style: italic">// `Listing` is an alias for Vec&lt;(u64, Vec&lt;u32&gt;)&gt; or in english: </span>
+<span style="color: #999999; font-style: italic">// A list of document_ids with the positions the term occured in these documents</span>
+<span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">invert_index(grouped_chunks:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">mpsc::Receiver&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Listing)&gt;&gt;)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Result</span><span style="color: #d0d0d0">&lt;</span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;Listing&gt;&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">inv_index:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;Listing&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">::with_capacity(</span><span style="color: #3677a9">8192</span><span style="color: #d0d0d0">);</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">while</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(chunk)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">grouped_chunks.recv()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Threshold determines at what term_id the terms are new.</span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">threshold</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">inv_index.len();</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(term_id,</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing)</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">in</span><span style="color: #666666"> </span><span style="color: #d0d0d0">chunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">term_id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&lt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">threshold</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #999999; font-style: italic">// term_id is already known. Append listing</span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">inv_index[uterm_id].append(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing);</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">}</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">else</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #999999; font-style: italic">// term_id is new. Push listing</span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">inv_index.push(listing);</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(inv_index)</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>The memory layout of the resulting <code>inv_index</code> is the following:</p>
+
+<pre><code> inv_index: Vec&lt;Vec&lt;(u64, Vec&lt;u32&gt;)&gt;&gt;
+
+ +--------------------------------+
+ |   data   |  length  | capacity |
+ +--------------------------------+
+       |
+       |  Listings = Vec&lt;(u64, Vec&lt;u32&gt;)&gt;
+       |
+ +-----v-----------------------------------------------------------+
+ |   data   |  length  | capacity |   data   |  length  | capacity | ...
+ +-----------------------------------------------------------------+
+       |                               |
+       |                               |
+       |  (u64, Vec&lt;u32&gt;)              +-------------------------------------------------------+
+       |  = Listing for one term                                                               |
+ +-----v---------------------------------------------------------------------------------+     |
+ |  doc_id  |   data   |  length  | capacity |  doc_id  |   data   |  length  | capacity |     |
+ +---------------------------------------------------------------------------------------+     |
+                                                                                               |
+                                                                                               |
+       +---------------------------------------------------------------------------------------+
+       |  = Listing for another term
+ +-----v---------------------------------------------------------------------------------+
+ |  doc_id  |   data   |  length  | capacity |  doc_id  |   data   |  length  | capacity |
+ +---------------------------------------------------------------------------------------+
+</code></pre>
+
+<p>In my mind, the postings where close together in memory; and thus, when postings are changed which belong to adjacent term_ids they are close together in memory. Really?
+Let&rsquo;s have a look!</p>
+
+<h2 id="tracking-memory-access">Tracking Memory Access</h2>
+
+<p>My idea was to log memory acces by logging the memory locations of the postings.</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #666666">    </span><span style="color: #d0d0d0">println!(</span><span style="color: #ed9d13">&quot;{:?}:{}|{}|{}&quot;</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">inv_index[uterm_id].as_ptr(),</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing_len,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">new);</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>This line prints the memory location of the listing, the term_id, the length of the appended listing and if the term_id was known before or not:</p>
+
+<pre><code>0x7fd6edc0c020:0|1|true
+0x7fd6edc0c040:1|1|true
+0x7fd6edc0c060:2|1|true
+0x7fd6edc0c0a0:3|1|true
+0x7fd6edc0c0e0:4|1|true
+0x7fd6edc0c100:5|1|true
+0x7fd6edc0c120:6|1|true
+0x7fd6edc0c140:7|1|true
+0x7fd6edc0c160:8|1|true
+0x7fd6edc0c180:9|1|true
+0x7fd6edc0c1a0:10|1|true
+</code></pre>
+
+<p>Not really helpful. What I am really interested in is the difference in memory location between each access.
+Let&rsquo;s parse it:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">use</span><span style="color: #666666"> </span><span style="color: #d0d0d0">std::io::BufRead;</span><span style="color: #666666"></span>
+
+<span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">main()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">stdin</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">std::io::stdin();</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">stdinlock</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">stdin.lock();</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">last</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">line</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">in</span><span style="color: #666666"> </span><span style="color: #d0d0d0">stdinlock.lines()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666">        </span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">line</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">line.unwrap();</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">z</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">::from_str_radix(&amp;line[</span><span style="color: #3677a9">2</span><span style="color: #d0d0d0">..</span><span style="color: #3677a9">14</span><span style="color: #d0d0d0">],</span><span style="color: #666666"> </span><span style="color: #3677a9">16</span><span style="color: #d0d0d0">).unwrap();</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">last</span><span style="color: #666666"> </span><span style="color: #d0d0d0">==</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">last</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">z;</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"> </span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">println!(</span><span style="color: #ed9d13">&quot;{:?}{}&quot;</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">z</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">i64</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-</span><span style="color: #666666"> </span><span style="color: #d0d0d0">last</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">i64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;line[</span><span style="color: #3677a9">14</span><span style="color: #d0d0d0">..]);</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">last</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">z;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666">    </span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Now it looks like this:</p>
+
+<pre><code>0:0|1|true
+32:1|1|true
+32:2|1|true
+64:3|1|true
+64:4|1|true
+32:5|1|true
+32:6|1|true
+32:7|1|true
+32:8|1|true
+32:9|1|true
+32:10|1|true
+</code></pre>
+
+<p>Cool, exactly what I wanted. <br />
+(Maybe someone wants to build a cool visualisation tool for this? :D)<br />
+Listings are close to each other. Let&rsquo;s try it with more data.
+It starts similar and everything is fine the first few chunks. Then fireworks start:</p>
+
+<pre><code>-3983328:1|1|false
+100352:2|1|false
+...
+191488:382|1|false
+-269312:385|1|false
+-5120:395|1|false
+312320:404|1|false
+156672:410|1|false
+-160768:447|1|false
+-307200:493|1|false
+312320:498|1|false
+</code></pre>
+
+<p>This is very bad. Random Access! These differences in memory location are beyond any cacheline or page.
+This has to be the problem why cycles are stalled and why cache-loads are missed.
+Why does this happen? <br />
+Listings grow during the indexing process. And thus they need to be reallocated. Adjacent space is already occupied so it is allocated somewhere else.<br />
+New data is still allocated close to each other, though:</p>
+
+<pre><code>32:6222|1|true
+32:6223|1|true
+32:6224|1|true
+32:6225|1|true
+32:6226|1|true
+32:6227|1|true
+32:6228|1|true
+32:6229|1|true
+32:6230|1|true
+</code></pre>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>Memory becomes very fragmented when it needs to be reallocated. This slows the indexing process.<br />
+How can we improve on that?
+We cannot estimate the length of listings, some are small some are large, we don&rsquo;t even know how large the collection is going to be at that moment. Thus, preallocating listings seems to go in the wrong direction.
+Also, linked-lists would remove the need for reallocation but would even introduce more pointers to random memory locations.</p>
+
+<p>Nevertheless, there is still a huge potential for improved indexing speed.
+I have two ideas though that I will be examining in more detail the next weeks:</p>
+
+<ol>
+<li>Write less data to memory by compressing listings as already done when writing the index to disk</li>
+<li>Implement a data-structure that supports chunked allocations to minimize reallocations</li>
+</ol>
+
+    </div>
+  </article>
+
+</main>
+
+      <footer class="footer">
+        <ul class="footer-links">
+
+        </ul>
+      </footer>
+
+    </div>
+  </body>
+</html>
+
