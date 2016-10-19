@@ -3,6 +3,11 @@ content_type = "Blog"
 date = "2016-10-13T10:43:11+02:00"
 title = "Indexing: Memory Access"
 +++
+Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. \
+This blog post is part two of a series about improving indexing speed.
+
+----
+
 [Last blog post](/post/simplify_indexing/) dealt with benchmarking indexing speed and improving it.
 Since then indexing was further improved by about 2x and I learned about what is limiting the indexing speed.
 

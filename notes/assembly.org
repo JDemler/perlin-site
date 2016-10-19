@@ -1,0 +1,44 @@
+* IndexingChunk::append
+** 52b8ec9
+*** Getting the slice
+  0.42 │ 32:   mov    QWORD PTR [rbp-0x60],rdx                                                                                                                                                                                               ▒
+       │             for (count, &(doc_id, ref positions)) in listing.iter().enumerate() {                                                                                                                                                   ▒
+  0.56 │       mov    rcx,QWORD PTR [rdx]                                                                                                                                                                                                    ▒
+       │                 let delta_doc_id = doc_id - self.last_doc_id;                                                                                                                                                                       ▒
+       │                 self.last_doc_id = doc_id;                                                                                                                                                                                          ▒
+       │                 // Encode the delta_doc_id with vbyte code                                                                                                                                                                          ▒
+       │                 let encoded_ddoc_id = VByteEncoded::new(delta_doc_id as usize);                                                                                                                                                     ▒
+       │                 //HOTSPOT                                                                                                                                                                                                           ▒
+       │                 if let Ok(bytes_written) = encoded_ddoc_id.write_to(&mut self.data[SIZE - self.capacity as usize..]) {                                                                                                              ▒
+  4.86 │       movzx  edi,WORD PTR [r13+0x1a]                                                                                                                                                                                                ▒
+ 47.90 │       movzx  r14d,di                                                                                                                                                                                                                ▒
+       │                 let delta_doc_id = doc_id - self.last_doc_id;                                                                                                                                                                       ▒
+  1.58 │       mov    rax,rcx                                                                                                                                                                                                                ▒
+  1.03 │       sub    rax,QWORD PTR [r13+0x10]                                                                                                                                                                                               ▒
+       │                 self.last_doc_id = doc_id;                                                                                                                                                                                          ▒
+  1.56 │       mov    QWORD PTR [r13+0x10],rcx                                                                                                                                                                                               ▒
+       │                 let encoded_ddoc_id = VByteEncoded::new(delta_doc_id as usize);                                                                                                                                                     ▒
+  0.04 │       cmp    rax,0x80                                                                                                                                                                                                               ▒
+  0.44 │       mov    QWORD PTR [rbp-0x58],rsi                                                                                                                                                                                               ▒
+  0.02 │       mov    WORD PTR [rbp-0x3a],di                                                                                                                                                                                                 ▒
+  0.03 │     ↓ jae    80    
+** 361567
+*** Getting the slice
+  0.00 │1b301:   mov    QWORD PTR [rbp-0x68],rdi                                                                                                                                                                                             ▒
+  0.01 │1b305:   mov    QWORD PTR [rbp-0x50],rsi                                                                                                                                                                                             ▒
+       │               let mut working_slice = &mut self.data[SIZE - self.capacity as usize..];                                                                                                                                              ▒
+  0.20 │1b309:   movzx  r12d,WORD PTR [rsi+0xe]                                                                                                                                                                                              ▒
+ 42.53 │1b30e:   mov    edi,0xfe8
+*** Setting last doc id
+  0.29 │1b959:   mov    rax,QWORD PTR [rbp-0x50]                                                                                                                                                                                             ▒
+  0.51 │1b95d:   mov    rdi,QWORD PTR [rbp-0x80]                                                                                                                                                                                             ▒
+       │                       }                                                                                                                                                                                                             ▒
+       │                   } else {                                                                                                                                                                                                          ▒
+       │                       self.capacity = old_capa;                                                                                                                                                                                     ▒
+       │                       return Err(count);                                                                                                                                                                                            ▒
+       │                   }                                                                                                                                                                                                                 ▒
+       │                   self.last_doc_id = doc_id;                                                                                                                                                                                        ▒
+ 12.10 │1b961:   mov    QWORD PTR [rax+0x10],rdi                                                                                                                                                                                             ▒
+       │                   self.postings_count += 1;                                                                                                                                                                                         ▒
+  0.79 │1b965:   inc    WORD PTR [rax+0xc]                                                                                                                                                                                                   ▒
+  1.19 │1b969:   mov    rsi,QWORD PTR [rbp-0x78]    

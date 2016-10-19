@@ -4,6 +4,11 @@ date = "2016-10-04T10:54:49+02:00"
 title = "Simplify Indexing"
 +++
 
+Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. \
+This blog post is part one of a series about improving indexing speed.
+
+----
+
 In the release notes of [Perlin v0.1](/news/release-v0.1/) we state that "indexing is incredibly slow".\
 Having worked on this for the last week I have to rephrase that statement into "indexing benchmarks are incredibly wrong".
 
