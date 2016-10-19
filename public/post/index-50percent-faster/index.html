@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+<title>Index 50% Faster! - Perlin - Information Retrieval</title>
+<meta property="og:title" content="Index 50% Faster! - Perlin - Information Retrieval">
+
+
+
+  
+
+
+
+
+
+
+<link rel="stylesheet" href="https://www.perlin-ir.org/css/main.css" media="all">
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header class="header">
+        <nav class="nav">
+  <a href="https://www.perlin-ir.org/" class="home-link">Perlin</a>
+
+  <ul class="nav-links">
+    
+    <li><a href="https://doc.perlin-ir.org/">Documentation</a></li>
+    
+    <li><a href="https://github.com/JDemler/perlin">GitHub</a></li>
+    
+  </ul>
+</nav>
+
+      </header>
+
+
+<main class="content" role="main">
+
+  <article class="article">
+    <h1 class="article-title">Index 50% Faster!</h1>
+
+    
+    <span class="article-date">October 19, 2016</span>
+    
+
+    <div class="article-content">
+      
+
+<p>Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. <br />
+This blog post is part three of a series about improving indexing speed.</p>
+
+<hr />
+
+<p>Last <a href="/post/indexing-memory-access/">blog post</a> identified memory access patterns as bottleneck for indexing speed. It concluded, that chunking allocations and compressing listings during indexing might result in better memory locality and thus solve the problem of LL-cache misses.</p>
+
+<p>In this post implementation details of these ideas are described and their impact on performance is evaluated.</p>
+
+<h2 id="abstract-idea">Abstract Idea</h2>
+
+<p>Let&rsquo;s start by looking at the adjusted algorithm in a abstract way. Like in the last post there are three basic tasks to be done during indexing:</p>
+
+<ol>
+<li>Matching term to term_id</li>
+<li>Sorting and grouping (term_id, doc_id, position)-triplets</li>
+<li>And appending the results to the listing of each term_id</li>
+</ol>
+
+<p>This does not change at all. What changes, is the way <code>(document_id, &lt;term_position&gt;)</code> is appended to the inverted index. That task is done by a new struct called <code>IndexingChunk</code>.</p>
+
+<h2 id="indexingchunk">IndexingChunk</h2>
+
+<p><code>IndexingChunk</code> is a element in an <a href="https://en.wikipedia.org/wiki/Unrolled_linked_list">unrolled linked list</a> of compressed indexing data. Its task is to compress listings and append the resulting bytes to itself.
+When full, it shall report how much of the listing fitted into it.</p>
+
+<p>To remove one level of indirection, the payload of this chunk is not modelled as <code>Vec</code> but rather as a fixed size array:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">struct</span><span style="color: #666666"> </span><span style="color: #d0d0d0">IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">//Some fields omitted</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">previous_chunk:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">capacity:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u16</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">last_doc_id:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">data:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">[</span><span style="color: #6ab825; font-weight: bold">u8</span><span style="color: #d0d0d0">;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">SIZE],</span><span style="color: #666666"> </span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>The field &lsquo;last_doc_id&rsquo; stores the <code>document_id</code> of the last appended posting and makes it thus possible to <a href="https://en.wikipedia.org/wiki/Delta_encoding">delta-encode</a><code>doc_id</code>s.
+Also, <code>capacity</code> stores the remaining capacity of the chunk and <code>previous_chunk</code> will be filled with the id of the next chunk once it is created.</p>
+
+<p>Acting as central and single method of <code>IndexingChunk</code> is <code>append</code> which takes a listing to be appended and returns either <code>Ok</code> or the number of postings that fitted into the chunk:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">append(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;[(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #d0d0d0">&gt;)])</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Result</span><span style="color: #d0d0d0">&lt;(),</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Simplified and translated into pseudo-code, it does the following:</p>
+
+<pre><code>for every (doc_id, positions) in listing
+    delta and vbyte encode doc_id
+    try to write resulting bytes to payload
+        for every position in positions
+            delta and vbyte encode position
+            try to write resulting bytes to payload
+     else 
+         reset capacity
+         return current iteration over listing
+</code></pre>
+
+<p>So far so good. These chunks are organised by a struct called &lsquo;ChunkedStorage` (this name seems bad and will probably be changed).</p>
+
+<h2 id="chunkedstorage">ChunkedStorage</h2>
+
+<p><code>ChunkedStorage</code> has the task to organise <code>IndexingChunks</code> by keeping hot chunks (the ones which are currently written to) close together and archive full chunks so that they can be accessed later for querying.</p>
+
+<p>In its current state it is not fully functional in the sense that it does not provide functionality for querying. But more on that later.</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">struct</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ChunkedStorage</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">hot_chunks:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;IndexingChunk&gt;,</span><span style="color: #666666"> </span><span style="color: #999999; font-style: italic">//Has the size of vocabulary</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">archived_chunks:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;IndexingChunk&gt;,</span><span style="color: #666666"> </span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>In later iterations, archived_chunks will be replaced by something more general, something that allows writing chunks to different storage types (i.e. RAM, Memory, maybe Network).</p>
+
+<p><code>ChunkedStorage</code> has three relevant methods, they are all straightforward and fun:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">impl</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ChunkedStorage</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">new_chunk(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">id:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks.push(IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">previous_chunk:</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">last_doc_id:</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">capacity:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">SIZE</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u16</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">data:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">unsafe</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"> </span><span style="color: #d0d0d0">mem::uninitialized()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">},</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">});</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks[id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">]</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next_chunk(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">id:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">previous_chunk:</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.archived_chunks.len()</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">last_doc_id:</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks[id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">].last_doc_id,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">capacity:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">SIZE</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u16</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">data:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">unsafe</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"> </span><span style="color: #d0d0d0">mem::uninitialized()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">},</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">};</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">//Move the full chunk from the hot to the cold</span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">//That&#39;s more fun than I thought</span>
+<span style="color: #666666">        </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.archived_chunks.push(mem::replace(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks[id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">],</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next));</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks[id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">]</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666">    </span>
+
+<span style="color: #666666">    </span><span style="color: #cd2828; font-weight: bold">#[inline]</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">get_current_mut(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">id:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">IndexingChunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.hot_chunks[id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">]</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>By keeping the hot chunks in an extra vector it is ensured, that they are close together in memory which should result in less cache-misses and thus improve performance.</p>
+
+<h2 id="adjusted-implementation-for-task-3">Adjusted Implementation for Task_3</h2>
+
+<p>Task 3 now has to use <code>ChunkedStorage</code> and <code>IndexingChunk</code> of course. But it all feels good and comes very naturally:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">storage</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ChunkedStorage::new(</span><span style="color: #3677a9">4000</span><span style="color: #d0d0d0">);</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">while</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(chunk)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">grouped_chunks.recv()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">threshold</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">storage.len();</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(term_id,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">listing)</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">in</span><span style="color: #666666"> </span><span style="color: #d0d0d0">chunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">term_id</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">// Get chunk to write to or create if unknown</span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">result</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">stor_chunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">uterm_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&lt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">threshold</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">storage.get_current_mut(term_id)</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">}</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">else</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">storage.new_chunk(term_id)</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">};</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">stor_chunk.append(&amp;listing)</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">};</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">// Listing did not fit into current chunk completely</span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">// Get the next and put it in there</span>
+<span style="color: #666666">        </span><span style="color: #999999; font-style: italic">// Repeat until done</span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #24909d">Err</span><span style="color: #d0d0d0">(</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">position)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">result</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">loop</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next_chunk</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">storage.next_chunk(term_id);</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #24909d">Err</span><span style="color: #d0d0d0">(new_position)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next_chunk.append(&amp;listing[position..])</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                    </span><span style="color: #d0d0d0">position</span><span style="color: #666666"> </span><span style="color: #d0d0d0">+=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">new_position;</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">}</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">else</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">                    </span><span style="color: #6ab825; font-weight: bold">break</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">                </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<h2 id="results">Results</h2>
+
+<p>Now. I hope you are as exited as I am. Let&rsquo;s see what we&rsquo;ve got.
+I am using the same machine and the same test collection as in lasts blog post, so results should be comparable.</p>
+
+<pre><code>./testbench ~/test.bin 
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2446ms
+At a rate of 81Mb/s
+</code></pre>
+
+<p>That&rsquo;s an improvement of 50% or about 25Mb/s over the last version. Let&rsquo;s see if the cache misses and stalled cycles changed:</p>
+
+<pre><code>perf stat ./testbench ~/test.bin 
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2445ms
+At a rate of 81Mb/s
+100000
+
+ Performance counter stats for './testbench /home/jdemler/test.bin':
+
+       9168.706474      task-clock:u (msec)       #    3.690 CPUs utilized          
+                 0      context-switches:u        #    0.000 K/sec                  
+                 0      cpu-migrations:u          #    0.000 K/sec                  
+           342,090      page-faults:u             #    0.037 M/sec                  
+    21,329,469,020      cycles:u                  #    2.326 GHz                    
+     9,293,938,235      stalled-cycles-frontend:u #   43.57% frontend cycles idle   
+     5,693,540,682      stalled-cycles-backend:u  #   26.69% backend cycles idle    
+    37,224,017,304      instructions:u            #    1.75  insn per cycle         
+                                                  #    0.25  stalled cycles per insn
+     5,635,594,793      branches:u                #  614.655 M/sec                  
+       117,443,035      branch-misses:u           #    2.08% of all branches        
+
+       2.484579972 seconds time elapsed
+</code></pre>
+
+<p>That&rsquo;s 10% less frontend cycles idle and +0.5 instructions per cycle.</p>
+
+<pre><code>perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,
+             LLC-loads,LLC-load-misses ./testbench ~/test.bin
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2389ms
+At a rate of 83Mb/s
+100000
+
+ Performance counter stats for './testbench /home/jdemler/test.bin':
+
+    12,159,900,932      L1-icache-loads:u                                             (66.56%)
+        12,582,764      L1-icache-load-misses:u                                       (66.54%)
+     7,979,740,445      L1-dcache-loads:u                                             (66.71%)
+       416,592,405      L1-dcache-load-misses:u   #    5.22% of all L1-dcache hits    (66.75%)
+        70,240,608      LLC-loads:u                                                   (66.77%)
+         9,644,759      LLC-load-misses:u         #    0.16% of all LL-cache hits     (66.77%)
+
+       2.429317333 seconds time elapsed
+</code></pre>
+
+<p>As expected, the LLC-load-misses are down from 56M to 10M. The L1-dcache-misses though stayed about the same.
+400M in the old version vs 416M now.</p>
+
+<h2 id="conclusion-and-future-work">Conclusion and future Work</h2>
+
+<p>The indexing is now 50% faster, but everything else is broken. I prototyped this change into the existing code, leaving nothing but scorched earth. The next week will be spent cleaning this mess up and marrying the query system with the new chunked indexing system.</p>
+
+<p>Nevertheless, L1-cache misses are still high and could probably still be optimised.
+But, I think micro-optimisations beyond this point should only be considered when real world applications see a need for it. The current indexing speed should be sufficient for most information retrieval needs in small projects.
+I spent more than enough time on that anyway.</p>
+
+<p><center>
+<img src="/images/git_mess.png" alt="Messy Git-Tree" />
+</center></p>
+
+    </div>
+  </article>
+
+</main>
+
+      <footer class="footer">
+        <ul class="footer-links">
+
+        </ul>
+      </footer>
+
+    </div>
+  </body>
+</html>
+

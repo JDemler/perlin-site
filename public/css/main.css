@@ -58,7 +58,6 @@ body {
 body {
     color: #222;
     font-family: "Fira Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
-    font-size: 16px;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -174,7 +173,6 @@ a {
 .leftcolumn {
     float: left;
     width: 60%;
-    font-size: 12px;
 }
 
 .rightcolum {
@@ -213,12 +211,12 @@ a {
 }
 
 .article-content hr {
-    width: 150px;
+    width: 75%;
     margin: 50px auto;
     height: 1px;
     overflow: hidden;
     border: none;
-    background: #e5e5e5;
+    background: #777;
 }
 
 .highlight {

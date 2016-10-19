@@ -1,7 +1,7 @@
 +++
 content_type = "Blog"
 date = "2016-10-19T10:03:10+02:00"
-title = "Indexing 50% Faster"
+title = "Index 50% Faster!"
 
 +++
 

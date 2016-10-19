@@ -6,8 +6,230 @@
     <description>Recent content in Posts on Perlin - Information Retrieval</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Thu, 13 Oct 2016 10:43:11 +0200</lastBuildDate>
+    <lastBuildDate>Wed, 19 Oct 2016 10:03:10 +0200</lastBuildDate>
     <atom:link href="https://www.perlin-ir.org/post/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Index 50% Faster!</title>
+      <link>https://www.perlin-ir.org/post/index-50percent-faster/</link>
+      <pubDate>Wed, 19 Oct 2016 10:03:10 +0200</pubDate>
+      
+      <guid>https://www.perlin-ir.org/post/index-50percent-faster/</guid>
+      <description>
+
+&lt;p&gt;Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. &lt;br /&gt;
+This blog post is part three of a series about improving indexing speed.&lt;/p&gt;
+
+&lt;hr /&gt;
+
+&lt;p&gt;Last &lt;a href=&#34;https://www.perlin-ir.org/post/indexing-memory-access/&#34;&gt;blog post&lt;/a&gt; identified memory access patterns as bottleneck for indexing speed. It concluded, that chunking allocations and compressing listings during indexing might result in better memory locality and thus solve the problem of LL-cache misses.&lt;/p&gt;
+
+&lt;p&gt;In this post implementation details of these ideas are described and their impact on performance is evaluated.&lt;/p&gt;
+
+&lt;h2 id=&#34;abstract-idea&#34;&gt;Abstract Idea&lt;/h2&gt;
+
+&lt;p&gt;Let&amp;rsquo;s start by looking at the adjusted algorithm in a abstract way. Like in the last post there are three basic tasks to be done during indexing:&lt;/p&gt;
+
+&lt;ol&gt;
+&lt;li&gt;Matching term to term_id&lt;/li&gt;
+&lt;li&gt;Sorting and grouping (term_id, doc_id, position)-triplets&lt;/li&gt;
+&lt;li&gt;And appending the results to the listing of each term_id&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;This does not change at all. What changes, is the way &lt;code&gt;(document_id, &amp;lt;term_position&amp;gt;)&lt;/code&gt; is appended to the inverted index. That task is done by a new struct called &lt;code&gt;IndexingChunk&lt;/code&gt;.&lt;/p&gt;
+
+&lt;h2 id=&#34;indexingchunk&#34;&gt;IndexingChunk&lt;/h2&gt;
+
+&lt;p&gt;&lt;code&gt;IndexingChunk&lt;/code&gt; is a element in an &lt;a href=&#34;https://en.wikipedia.org/wiki/Unrolled_linked_list&#34;&gt;unrolled linked list&lt;/a&gt; of compressed indexing data. Its task is to compress listings and append the resulting bytes to itself.
+When full, it shall report how much of the listing fitted into it.&lt;/p&gt;
+
+&lt;p&gt;To remove one level of indirection, the payload of this chunk is not modelled as &lt;code&gt;Vec&lt;/code&gt; but rather as a fixed size array:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;struct&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//Some fields omitted&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;previous_chunk:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u32&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;capacity:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u16&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;last_doc_id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;data:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;[&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u8&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SIZE],&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;The field &amp;lsquo;last_doc_id&amp;rsquo; stores the &lt;code&gt;document_id&lt;/code&gt; of the last appended posting and makes it thus possible to &lt;a href=&#34;https://en.wikipedia.org/wiki/Delta_encoding&#34;&gt;delta-encode&lt;/a&gt;&lt;code&gt;doc_id&lt;/code&gt;s.
+Also, &lt;code&gt;capacity&lt;/code&gt; stores the remaining capacity of the chunk and &lt;code&gt;previous_chunk&lt;/code&gt; will be filled with the id of the next chunk once it is created.&lt;/p&gt;
+
+&lt;p&gt;Acting as central and single method of &lt;code&gt;IndexingChunk&lt;/code&gt; is &lt;code&gt;append&lt;/code&gt; which takes a listing to be appended and returns either &lt;code&gt;Ok&lt;/code&gt; or the number of postings that fitted into the chunk:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;append(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;listing:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;[(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u32&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;)])&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Result&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;(),&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;Simplified and translated into pseudo-code, it does the following:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;for every (doc_id, positions) in listing
+    delta and vbyte encode doc_id
+    try to write resulting bytes to payload
+        for every position in positions
+            delta and vbyte encode position
+            try to write resulting bytes to payload
+     else 
+         reset capacity
+         return current iteration over listing
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;So far so good. These chunks are organised by a struct called &amp;lsquo;ChunkedStorage` (this name seems bad and will probably be changed).&lt;/p&gt;
+
+&lt;h2 id=&#34;chunkedstorage&#34;&gt;ChunkedStorage&lt;/h2&gt;
+
+&lt;p&gt;&lt;code&gt;ChunkedStorage&lt;/code&gt; has the task to organise &lt;code&gt;IndexingChunks&lt;/code&gt; by keeping hot chunks (the ones which are currently written to) close together and archive full chunks so that they can be accessed later for querying.&lt;/p&gt;
+
+&lt;p&gt;In its current state it is not fully functional in the sense that it does not provide functionality for querying. But more on that later.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;struct&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;ChunkedStorage&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;hot_chunks:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;IndexingChunk&amp;gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//Has the size of vocabulary&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;archived_chunks:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;IndexingChunk&amp;gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;In later iterations, archived_chunks will be replaced by something more general, something that allows writing chunks to different storage types (i.e. RAM, Memory, maybe Network).&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;ChunkedStorage&lt;/code&gt; has three relevant methods, they are all straightforward and fun:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;impl&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;ChunkedStorage&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;new_chunk(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks.push(IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;previous_chunk:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;0&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;last_doc_id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;0&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;capacity:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SIZE&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u16&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;data:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;unsafe&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;mem::uninitialized()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;},&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;});&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks[id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;]&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next_chunk(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;previous_chunk:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.archived_chunks.len()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u32&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;last_doc_id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks[id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;].last_doc_id,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;capacity:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SIZE&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u16&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;data:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;unsafe&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;mem::uninitialized()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;},&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;};&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//Move the full chunk from the hot to the cold&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//That&amp;#39;s more fun than I thought&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.archived_chunks.push(mem::replace(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks[id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;],&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next));&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks[id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;]&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;
+
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #cd2828; font-weight: bold&#34;&gt;#[inline]&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;get_current_mut(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;IndexingChunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.hot_chunks[id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;]&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;By keeping the hot chunks in an extra vector it is ensured, that they are close together in memory which should result in less cache-misses and thus improve performance.&lt;/p&gt;
+
+&lt;h2 id=&#34;adjusted-implementation-for-task-3&#34;&gt;Adjusted Implementation for Task_3&lt;/h2&gt;
+
+&lt;p&gt;Task 3 now has to use &lt;code&gt;ChunkedStorage&lt;/code&gt; and &lt;code&gt;IndexingChunk&lt;/code&gt; of course. But it all feels good and comes very naturally:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;storage&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;ChunkedStorage::new(&lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;4000&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;while&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Ok&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(chunk)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;grouped_chunks.recv()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;threshold&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;storage.len();&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;for&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(term_id,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;listing)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;in&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;chunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;uterm_id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;term_id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Get chunk to write to or create if unknown&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;result&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;stor_chunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;uterm_id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;threshold&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;storage.get_current_mut(term_id)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;else&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;storage.new_chunk(term_id)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;};&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;stor_chunk.append(&amp;amp;listing)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;};&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Listing did not fit into current chunk completely&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Get the next and put it in there&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Repeat until done&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Err&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;position)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;result&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;loop&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next_chunk&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;storage.next_chunk(term_id);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Err&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(new_position)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next_chunk.append(&amp;amp;listing[position..])&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;position&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;+=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;new_position;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;else&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;break&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;h2 id=&#34;results&#34;&gt;Results&lt;/h2&gt;
+
+&lt;p&gt;Now. I hope you are as exited as I am. Let&amp;rsquo;s see what we&amp;rsquo;ve got.
+I am using the same machine and the same test collection as in lasts blog post, so results should be comparable.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;./testbench ~/test.bin 
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2446ms
+At a rate of 81Mb/s
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;That&amp;rsquo;s an improvement of 50% or about 25Mb/s over the last version. Let&amp;rsquo;s see if the cache misses and stalled cycles changed:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;perf stat ./testbench ~/test.bin 
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2445ms
+At a rate of 81Mb/s
+100000
+
+ Performance counter stats for &#39;./testbench /home/jdemler/test.bin&#39;:
+
+       9168.706474      task-clock:u (msec)       #    3.690 CPUs utilized          
+                 0      context-switches:u        #    0.000 K/sec                  
+                 0      cpu-migrations:u          #    0.000 K/sec                  
+           342,090      page-faults:u             #    0.037 M/sec                  
+    21,329,469,020      cycles:u                  #    2.326 GHz                    
+     9,293,938,235      stalled-cycles-frontend:u #   43.57% frontend cycles idle   
+     5,693,540,682      stalled-cycles-backend:u  #   26.69% backend cycles idle    
+    37,224,017,304      instructions:u            #    1.75  insn per cycle         
+                                                  #    0.25  stalled cycles per insn
+     5,635,594,793      branches:u                #  614.655 M/sec                  
+       117,443,035      branch-misses:u           #    2.08% of all branches        
+
+       2.484579972 seconds time elapsed
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;That&amp;rsquo;s 10% less frontend cycles idle and +0.5 instructions per cycle.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;perf stat -e L1-icache-loads,L1-icache-load-misses,L1-dcache-loads,L1-dcache-load-misses,
+             LLC-loads,LLC-load-misses ./testbench ~/test.bin
+
+DONE! Indexed 100000 documents each 250 terms totalling at  200Mb in 2389ms
+At a rate of 83Mb/s
+100000
+
+ Performance counter stats for &#39;./testbench /home/jdemler/test.bin&#39;:
+
+    12,159,900,932      L1-icache-loads:u                                             (66.56%)
+        12,582,764      L1-icache-load-misses:u                                       (66.54%)
+     7,979,740,445      L1-dcache-loads:u                                             (66.71%)
+       416,592,405      L1-dcache-load-misses:u   #    5.22% of all L1-dcache hits    (66.75%)
+        70,240,608      LLC-loads:u                                                   (66.77%)
+         9,644,759      LLC-load-misses:u         #    0.16% of all LL-cache hits     (66.77%)
+
+       2.429317333 seconds time elapsed
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;As expected, the LLC-load-misses are down from 56M to 10M. The L1-dcache-misses though stayed about the same.
+400M in the old version vs 416M now.&lt;/p&gt;
+
+&lt;h2 id=&#34;conclusion-and-future-work&#34;&gt;Conclusion and future Work&lt;/h2&gt;
+
+&lt;p&gt;The indexing is now 50% faster, but everything else is broken. I prototyped this change into the existing code, leaving nothing but scorched earth. The next week will be spent cleaning this mess up and marrying the query system with the new chunked indexing system.&lt;/p&gt;
+
+&lt;p&gt;Nevertheless, L1-cache misses are still high and could probably still be optimised.
+But, I think micro-optimisations beyond this point should only be considered when real world applications see a need for it. The current indexing speed should be sufficient for most information retrieval needs in small projects.
+I spent more than enough time on that anyway.&lt;/p&gt;
+
+&lt;p&gt;&lt;center&gt;
+&lt;img src=&#34;https://www.perlin-ir.org/images/git_mess.png&#34; alt=&#34;Messy Git-Tree&#34; /&gt;
+&lt;/center&gt;&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Indexing: Memory Access</title>
@@ -16,6 +238,11 @@
       
       <guid>https://www.perlin-ir.org/post/indexing-memory-access/</guid>
       <description>
+
+&lt;p&gt;Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. &lt;br /&gt;
+This blog post is part two of a series about improving indexing speed.&lt;/p&gt;
+
+&lt;hr /&gt;
 
 &lt;p&gt;&lt;a href=&#34;https://www.perlin-ir.org/post/simplify_indexing/&#34;&gt;Last blog post&lt;/a&gt; dealt with benchmarking indexing speed and improving it.
 Since then indexing was further improved by about 2x and I learned about what is limiting the indexing speed.&lt;/p&gt;
@@ -288,6 +515,11 @@ I have two ideas though that I will be examining in more detail the next weeks:&
       
       <guid>https://www.perlin-ir.org/post/simplify_indexing/</guid>
       <description>
+
+&lt;p&gt;Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. &lt;br /&gt;
+This blog post is part one of a series about improving indexing speed.&lt;/p&gt;
+
+&lt;hr /&gt;
 
 &lt;p&gt;In the release notes of &lt;a href=&#34;https://www.perlin-ir.org/news/release-v0.1/&#34;&gt;Perlin v0.1&lt;/a&gt; we state that &amp;ldquo;indexing is incredibly slow&amp;rdquo;.&lt;br /&gt;
 Having worked on this for the last week I have to rephrase that statement into &amp;ldquo;indexing benchmarks are incredibly wrong&amp;rdquo;.&lt;/p&gt;

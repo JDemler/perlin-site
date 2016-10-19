@@ -17,9 +17,13 @@
       <guid>https://www.perlin-ir.org/page/</guid>
       <description>
 
-&lt;h2 id=&#34;a-lazy-zero-allocation-and-data-agnostic-information-retrieval-library&#34;&gt;A lazy, zero-allocation and data-agnostic Information Retrieval library&lt;/h2&gt;
+&lt;h2 id=&#34;a-general-purpose-information-retrieval-library&#34;&gt;A general-purpose Information Retrieval library&lt;/h2&gt;
 
 &lt;hr /&gt;
+
+&lt;p&gt;Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner.&lt;/p&gt;
+
+&lt;p&gt;(Developer-)blogposts and news can be found here. In the future, we aim to add &amp;ldquo;guided hikes&amp;rdquo;, which explain the inner working of perlin by walking through certain code paths and explaining what happens.&lt;/p&gt;
 </description>
     </item>
     
