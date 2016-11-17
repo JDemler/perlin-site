@@ -239,3 +239,5 @@ We now not only have capabilities to jump to certain postings, which is a huge h
 This will result in far better performance when `IndexingChunk`s are not in memory but on disk or stored somewhere on the network.
 
 The next step will be to lazily decode positions. Positions are needed only for positional queries and then only if document ids match. So our current method, to decode them every time we look at a DocId is wrong.
+
+These changes will be available in version 0.2 which will hopefully be released by the end of this year.
