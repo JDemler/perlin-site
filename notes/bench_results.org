@@ -62,6 +62,33 @@ test index_10mb  ... bench: 302,353,024 ns/iter (+/- 15,041,106)
 test index_1mb   ... bench:  29,847,550 ns/iter (+/- 3,133,100)
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 4 measured
+** ChunkedStorage
+*** d69ddac
+running 4 tests
+test index_100kb ... bench:   4,977,220 ns/iter (+/- 607,944)
+test index_100mb ... bench: 1,333,506,148 ns/iter (+/- 69,124,141)
+test index_10mb  ... bench: 140,526,823 ns/iter (+/- 5,097,964)
+test index_1mb   ... bench:  25,265,408 ns/iter (+/- 3,438,457)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 4 measured
+*** c6f492e
+running 4 tests
+test index_100kb ... bench:   5,944,031 ns/iter (+/- 928,082)
+test index_100mb ... bench: 1,550,940,637 ns/iter (+/- 171,962,938)
+test index_10mb  ... bench: 155,303,666 ns/iter (+/- 7,628,189)
+test index_1mb   ... bench:  26,913,485 ns/iter (+/- 3,122,927)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 4 measured
+
+*** 3bb2c31
+running 4 tests
+test index_100kb ... bench:   4,897,557 ns/iter (+/- 1,234,864)
+test index_100mb ... bench: 1,958,370,581 ns/iter (+/- 80,890,964)
+test index_10mb  ... bench: 198,153,642 ns/iter (+/- 5,004,508)
+test index_1mb   ... bench:  31,528,967 ns/iter (+/- 2,185,275)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 4 measured
+
 
 * Boolean_Query
 ** Chunked List
@@ -150,3 +177,149 @@ test atom_seldom::typical                      ... bench:       1,326 ns/iter (+
 test atom_seldom::typical_first_ten            ... bench:       1,379 ns/iter (+/- 62)
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 12 measured
+** ChunkedStorage
+*** d69ddac
+running 12 tests
+test atom_frequent::large_collection           ... bench:  16,829,410 ns/iter (+/- 2,209,153)
+test atom_frequent::large_collection_first_ten ... bench:  16,853,381 ns/iter (+/- 1,515,223)
+test atom_frequent::typical                    ... bench:     381,276 ns/iter (+/- 24,567)
+test atom_frequent::typical_first_ten          ... bench:     395,656 ns/iter (+/- 29,714)
+test atom_seldom::large_collection             ... bench:      10,687 ns/iter (+/- 700)
+test atom_seldom::large_collection_first_ten   ... bench:       9,901 ns/iter (+/- 382)
+test atom_seldom::typical                      ... bench:       1,137 ns/iter (+/- 13)
+test atom_seldom::typical_first_ten            ... bench:       1,165 ns/iter (+/- 70)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 12 measured
+//Note to self. Removed large_docs because currently not working
+*** c6f492e
+running 12 tests
+test atom_frequent::large_collection           ... bench:   2,902,003 ns/iter (+/- 82,919)
+test atom_frequent::large_collection_first_ten ... bench:   2,851,847 ns/iter (+/- 17,516)
+test atom_frequent::typical                    ... bench:     290,777 ns/iter (+/- 15,491)
+test atom_frequent::typical_first_ten          ... bench:     285,587 ns/iter (+/- 13,727)
+test atom_seldom::large_collection             ... bench:      11,292 ns/iter (+/- 664)
+test atom_seldom::large_collection_first_ten   ... bench:      10,761 ns/iter (+/- 98)
+test atom_seldom::typical                      ... bench:       1,763 ns/iter (+/- 104)
+test atom_seldom::typical_first_ten            ... bench:       1,725 ns/iter (+/- 13)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 12 measured
+//Note to self. Removed large_docs because currently not working
+
+*** 3bb2c31
+running 12 tests
+test atom_frequent::large_collection           ... bench:   6,533,096 ns/iter (+/- 431,718)
+test atom_frequent::large_collection_first_ten ... bench:   6,397,006 ns/iter (+/- 115,997)
+test atom_frequent::typical                    ... bench:     668,582 ns/iter (+/- 2,887)
+test atom_frequent::typical_first_ten          ... bench:     664,420 ns/iter (+/- 2,410)
+test atom_seldom::large_collection             ... bench:      17,992 ns/iter (+/- 973)
+test atom_seldom::large_collection_first_ten   ... bench:      17,531 ns/iter (+/- 850)
+test atom_seldom::typical                      ... bench:         999 ns/iter (+/- 43)
+test atom_seldom::typical_first_ten            ... bench:       1,015 ns/iter (+/- 49)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 12 measured
+*** 416578e
+running 12 tests
+test atom_frequent::large_collection           ... bench:   6,475,047 ns/iter (+/- 305,035)
+test atom_frequent::large_collection_first_ten ... bench:   6,389,854 ns/iter (+/- 199,886)
+test atom_frequent::typical                    ... bench:     665,949 ns/iter (+/- 2,694)
+test atom_frequent::typical_first_ten          ... bench:     661,702 ns/iter (+/- 2,420)
+test atom_seldom::large_collection             ... bench:      24,583 ns/iter (+/- 57)
+test atom_seldom::large_collection_first_ten   ... bench:      25,192 ns/iter (+/- 1,512)
+test atom_seldom::typical                      ... bench:       1,729 ns/iter (+/- 36)
+test atom_seldom::typical_first_ten            ... bench:       1,713 ns/iter (+/- 97)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 12 measured
+* New Boolean_Query
+** bbd0754
+running 42 tests
+test and_frequent_frequent::large_collection           ... bench:  12,331,892 ns/iter (+/- 1,817,286)
+test and_frequent_frequent::large_collection_first_ten ... bench:  12,173,677 ns/iter (+/- 477,568)
+test and_frequent_frequent::large_documents_collection ... bench:   8,996,748 ns/iter (+/- 338,867)
+test and_frequent_frequent::large_documents_first_ten  ... bench:   8,796,308 ns/iter (+/- 314,049)
+test and_frequent_frequent::typical                    ... bench:   1,274,830 ns/iter (+/- 48,450)
+test and_frequent_frequent::typical_first_ten          ... bench:   1,252,974 ns/iter (+/- 49,964)
+test and_frequent_seldom::large_collection             ... bench:   7,258,424 ns/iter (+/- 1,265,403)
+test and_frequent_seldom::large_collection_first_ten   ... bench:   7,187,911 ns/iter (+/- 1,178,599)
+test and_frequent_seldom::large_documents_collection   ... bench:   4,806,007 ns/iter (+/- 145,416)
+test and_frequent_seldom::large_documents_first_ten    ... bench:   4,820,310 ns/iter (+/- 195,086)
+test and_frequent_seldom::typical                      ... bench:     677,991 ns/iter (+/- 22,846)
+test and_frequent_seldom::typical_first_ten            ... bench:     663,491 ns/iter (+/- 17,449)
+test and_seldom_seldom::large_collection               ... bench:      35,985 ns/iter (+/- 1,893)
+test and_seldom_seldom::large_collection_first_ten     ... bench:      35,599 ns/iter (+/- 1,195)
+test and_seldom_seldom::large_documents_collection     ... bench:      47,694 ns/iter (+/- 1,938)
+test and_seldom_seldom::large_documents_first_ten      ... bench:      47,372 ns/iter (+/- 866)
+test and_seldom_seldom::typical                        ... bench:       3,521 ns/iter (+/- 233)
+test and_seldom_seldom::typical_first_ten              ... bench:       3,503 ns/iter (+/- 55)
+test atom_frequent::large_collection                   ... bench:   6,372,295 ns/iter (+/- 312,688)
+test atom_frequent::large_collection_first_ten         ... bench:   6,391,588 ns/iter (+/- 326,134)
+test atom_frequent::large_documents_collection         ... bench:   4,806,137 ns/iter (+/- 111,404)
+test atom_frequent::large_documents_first_ten          ... bench:   4,809,719 ns/iter (+/- 239,437)
+test atom_frequent::typical                            ... bench:     666,699 ns/iter (+/- 33,249)
+test atom_frequent::typical_first_ten                  ... bench:     661,243 ns/iter (+/- 28,657)
+test atom_seldom::large_collection                     ... bench:      17,412 ns/iter (+/- 1,027)
+test atom_seldom::large_collection_first_ten           ... bench:      17,054 ns/iter (+/- 686)
+test atom_seldom::large_documents_collection           ... bench:      21,507 ns/iter (+/- 588)
+test atom_seldom::large_documents_first_ten            ... bench:      21,208 ns/iter (+/- 583)
+test atom_seldom::typical                              ... bench:       1,929 ns/iter (+/- 76)
+test atom_seldom::typical_first_ten                    ... bench:       1,947 ns/iter (+/- 60)
+test in_order_frequent::large_collection               ... bench:  19,360,593 ns/iter (+/- 885,414)
+test in_order_frequent::large_collection_first_ten     ... bench:  19,187,484 ns/iter (+/- 1,209,049)
+test in_order_frequent::large_documents_collection     ... bench:  13,949,463 ns/iter (+/- 696,489)
+test in_order_frequent::large_documents_first_ten      ... bench:  13,423,019 ns/iter (+/- 682,585)
+test in_order_frequent::typical                        ... bench:   2,011,313 ns/iter (+/- 125,012)
+test in_order_frequent::typical_first_ten              ... bench:   1,983,147 ns/iter (+/- 61,249)
+test in_order_seldom::large_collection                 ... bench:      67,338 ns/iter (+/- 1,206)
+test in_order_seldom::large_collection_first_ten       ... bench:      67,267 ns/iter (+/- 979)
+test in_order_seldom::large_documents_collection       ... bench:      85,661 ns/iter (+/- 1,201)
+test in_order_seldom::large_documents_first_ten        ... bench:      75,535 ns/iter (+/- 2,708)
+test in_order_seldom::typical                          ... bench:       5,570 ns/iter (+/- 346)
+test in_order_seldom::typical_first_ten                ... bench:       5,410 ns/iter (+/- 265)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 42 measured
+
+** efbaf37
+running 42 tests
+test and_frequent_frequent::large_collection           ... bench:  68,280,509 ns/iter (+/- 959,499)
+test and_frequent_frequent::large_collection_first_ten ... bench:      41,535 ns/iter (+/- 417)
+test and_frequent_frequent::large_documents_collection ... bench:  12,017,544 ns/iter (+/- 11,426)
+test and_frequent_frequent::large_documents_first_ten  ... bench:     119,682 ns/iter (+/- 290)
+test and_frequent_frequent::typical                    ... bench:   7,086,169 ns/iter (+/- 121,023)
+test and_frequent_frequent::typical_first_ten          ... bench:      40,457 ns/iter (+/- 1,868)
+test and_frequent_seldom::large_collection             ... bench:     620,392 ns/iter (+/- 39,776)
+test and_frequent_seldom::large_collection_first_ten   ... bench:      64,947 ns/iter (+/- 3,421)
+test and_frequent_seldom::large_documents_collection   ... bench:     874,826 ns/iter (+/- 45,903)
+test and_frequent_seldom::large_documents_first_ten    ... bench:      98,641 ns/iter (+/- 5,813)
+test and_frequent_seldom::typical                      ... bench:     109,744 ns/iter (+/- 7,101)
+test and_frequent_seldom::typical_first_ten            ... bench:      77,020 ns/iter (+/- 3,818)
+test and_seldom_seldom::large_collection               ... bench:     908,118 ns/iter (+/- 32,970)
+test and_seldom_seldom::large_collection_first_ten     ... bench:     897,672 ns/iter (+/- 45,134)
+test and_seldom_seldom::large_documents_collection     ... bench:     773,177 ns/iter (+/- 36,202)
+test and_seldom_seldom::large_documents_first_ten      ... bench:     787,246 ns/iter (+/- 41,182)
+test and_seldom_seldom::typical                        ... bench:      17,161 ns/iter (+/- 793)
+test and_seldom_seldom::typical_first_ten              ... bench:      16,912 ns/iter (+/- 880)
+test atom_frequent::large_collection                   ... bench:   6,067,820 ns/iter (+/- 340,712)
+test atom_frequent::large_collection_first_ten         ... bench:       6,213 ns/iter (+/- 254)
+test atom_frequent::large_documents_collection         ... bench:   4,679,663 ns/iter (+/- 217,801)
+test atom_frequent::large_documents_first_ten          ... bench:      49,879 ns/iter (+/- 2,572)
+test atom_frequent::typical                            ... bench:     632,035 ns/iter (+/- 24,198)
+test atom_frequent::typical_first_ten                  ... bench:       6,382 ns/iter (+/- 14)
+test atom_seldom::large_collection                     ... bench:      15,320 ns/iter (+/- 66)
+test atom_seldom::large_collection_first_ten           ... bench:       2,023 ns/iter (+/- 105)
+test atom_seldom::large_documents_collection           ... bench:      13,874 ns/iter (+/- 457)
+test atom_seldom::large_documents_first_ten            ... bench:       1,950 ns/iter (+/- 74)
+test atom_seldom::typical                              ... bench:       1,906 ns/iter (+/- 97)
+test atom_seldom::typical_first_ten                    ... bench:       1,130 ns/iter (+/- 60)
+test in_order_frequent::large_collection               ... bench:  73,648,675 ns/iter (+/- 2,907,607)
+test in_order_frequent::large_collection_first_ten     ... bench:  65,534,777 ns/iter (+/- 2,181,449)
+test in_order_frequent::large_documents_collection     ... bench:  17,588,323 ns/iter (+/- 833,329)
+test in_order_frequent::large_documents_first_ten      ... bench:  16,196,271 ns/iter (+/- 734,515)
+test in_order_frequent::typical                        ... bench:   7,553,448 ns/iter (+/- 470,796)
+test in_order_frequent::typical_first_ten              ... bench:   7,567,725 ns/iter (+/- 452,532)
+test in_order_seldom::large_collection                 ... bench:     903,870 ns/iter (+/- 20,888)
+test in_order_seldom::large_collection_first_ten       ... bench:     946,989 ns/iter (+/- 61,595)
+test in_order_seldom::large_documents_collection       ... bench:     831,883 ns/iter (+/- 45,327)
+test in_order_seldom::large_documents_first_ten        ... bench:     788,305 ns/iter (+/- 18,036)
+test in_order_seldom::typical                          ... bench:      11,462 ns/iter (+/- 245)
+test in_order_seldom::typical_first_ten                ... bench:      11,517 ns/iter (+/- 202)
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 42 measured
