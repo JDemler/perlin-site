@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+
+<title>Don&#39;t Decode Everything - Perlin - Information Retrieval</title>
+<meta property="og:title" content="Don&#39;t Decode Everything - Perlin - Information Retrieval">
+
+
+
+  
+
+
+
+
+
+
+<link rel="stylesheet" href="https://www.perlin-ir.org/css/main.css" media="all">
+
+  </head>
+  <body>
+    <div class="wrapper">
+      <header class="header">
+        <nav class="nav">
+  <a href="https://www.perlin-ir.org/" class="home-link">Perlin</a>
+
+  <ul class="nav-links">
+    
+    <li><a href="https://doc.perlin-ir.org/">Documentation</a></li>
+    
+    <li><a href="https://github.com/JDemler/perlin">GitHub</a></li>
+    
+  </ul>
+</nav>
+
+      </header>
+
+
+<main class="content" role="main">
+
+  <article class="article">
+    <h1 class="article-title">Don&#39;t Decode Everything</h1>
+
+    
+    <span class="article-date">November 17, 2016</span>
+    
+
+    <div class="article-content">
+      
+
+<p>Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. <br />
+This blog post describes how query execution speed was improved after changes to the underlying data structures.</p>
+
+<hr />
+
+<h2 id="recap">Recap</h2>
+
+<p>As discussed in the <a href="/post/index-50percent-faster/">last blog post</a>, to allow faster indexing, the data structures that store postings had to change.
+Listings are not stored anymore in continuous space of memory, but rather in chunks with static sizes.
+This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new junk is allocated.
+Additionally, we distinguish between hot chunks (chunks that represent the end of a listing) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.</p>
+
+<p>The following chart illustrates the idea. Term 0 occurs often in this collection. It needs five chunks (<code>HotIndexingChunk</code> #0, <code>IndexingChunk</code> #0, #1, #6 and #7) to store its listing.
+The chunks hold delta- and vbyte encoded postings in ascending order (<code>IndexingChunk</code> #0 &gt;= <code>IndexingChunk</code> #1 &hellip; &gt;= <code>HotIndexingChunk</code> #0):</p>
+
+<p>Note, that indexing chunks for this particular term_id are not adjacent to each other in memory.
+But, more importantly, <code>HotIndexingChunk</code>s, the ones that are frequently written to during the indexing process are close together in memory and will often be accessed in predictable manner.</p>
+
+<pre><code>                                                Archive
+
+ +--------------------------+              +------------------+
+ |   HotIndexingChunk       +--------------&gt; IndexingChunk #0 |
+ |   for term_id 0          |       |      +------------------+
+ +--------------------------+       +------&gt; IndexingChunk #1 |
+ |   HotIndexingChunk       |       |      +------------------+
+ |   for term_id 1          +--------------&gt; IndexingChunk #2 |
+ +--------------------------+       |      +------------------+
+ |   HotIndexingChunk       +--------------&gt; IndexingChunk #3 |
+ |   for term_id 2          |       |      +------------------+
+ +--------------------------+       | +----&gt; IndexingChunk #4 |
+ |   HotIndexingChunk       +---------+    +------------------+
+ |   for term_id 3          |       | +----&gt; IndexingChunk #5 |
+ +--------------------------+       |      +------------------+
+                                    +------&gt; IndexingChunk #6 |
+                                    |      +------------------+
+                                    +------&gt; IndexingChunk #7 |
+                                           +------------------+
+
+</code></pre>
+
+<h2 id="query-execution-performance">Query Execution Performance</h2>
+
+<p>Comparing this data structure to the old implementation (just storing the postings in vectors (see <a href="post/indexing-memory-access/">Indexing Memory Access</a>), this is far more complicated and takes time to decode.
+Unsurprisingly, query execution performance has thus dropped quite a bit.
+The first implementation after the rebuild of the indexing process just decoded the whole listing for every query term eagerly. This was far from optimal, especially because perlin allows lazy query execution.</p>
+
+<h3 id="lazy-decoding">Lazy Decoding</h3>
+
+<p>The first step for improvement was obvious. Instead of decoding the whole listing at once and storing it in a <code>Vec</code>, just hand the query execution machinery an <code>Iterator</code> for every query term that decodes the postings when necessary.</p>
+
+<p>This iterator holds a reference to the corresponding <code>HotIndexingChunk</code> as well as one to the archive. While advancing the iterator, it reads as many bytes as needed to decode the next posting from an archived chunk or the <code>HotIndexingChunk</code>.</p>
+
+<p>Changing the decoding from eager to lazy improved query execution performance for queries that are only interested in a small portion of results.</p>
+
+<p>The question now arises, if we can also improve query execution performance for the general case.</p>
+
+<h3 id="don-t-look-at-everything">Don&rsquo;t look at everything</h3>
+
+<p>When asked why grep is so fast, Mike Haertel responded with a <a href="https://lists.freebsd.org/pipermail/freebsd-current/2010-August/019310.html">lengthy email</a>. His key idea in this email is that &ldquo;to make[..] programs fast is to make them practically do nothing.&rdquo;</p>
+
+<p>Can we apply this idea to our case?</p>
+
+<p>Let&rsquo;s assume following query:</p>
+
+<pre><code>(&quot;for&quot; AND &quot;science&quot;)
+</code></pre>
+
+<p>&ldquo;for&rdquo; is a common term. It&rsquo;s listing will be spread over several <code>IndexingChunk</code>s. &ldquo;science&rdquo; on the other hand, will probably occur at least a magnitude less often than &ldquo;for&rdquo;.</p>
+
+<p>Consider following collection:</p>
+
+<pre><code>doc_0: &quot;For a long time, people have been studying the stars&quot;
+doc_1: &quot;The search for life on Mars is ongoing&quot;
+doc_2: &quot;Jupiter can be seen with the naked eye, for it is the largest of the planets&quot;
+doc_3: &quot;Venus seems uninhabitable for human beings&quot;
+doc_4: &quot;He exclaimed For Science! while lithobraking on Pluto&quot;
+</code></pre>
+
+<p>For this very small collection, the listings for &ldquo;for&rdquo; and &ldquo;science&rdquo; look like this (positions left out for simplicity):</p>
+
+<pre><code>              chunk 1  | chunk 2
+           +---+---+-------+---+
+           |   |   |   |   |   |
+  &quot;for&quot;    | 0 | 1 | 2 | 3 | 4 |
+           |   |   |   |   |   |
+           +---+---+---+---+---+
+
+           +---+
+           |   |
+&quot;science&quot;  | 4 |
+           |   |
+           +---+
+
+</code></pre>
+
+<p>&ldquo;for&rdquo; occurs in document 0, 1, 2, 3 and 4 while &ldquo;science&rdquo; only occurs in document 4.</p>
+
+<p>Assume now further, that the listing of &ldquo;for&rdquo; is spread over two chunks.</p>
+
+<p>When executing the query, the old way to do this is to look at every posting of every query term.
+In this case the process would executed as follows (pseudo-code for clarity):</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #ed9d13">&quot;science&quot;</span><span style="color: #d0d0d0">.next()</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">loop</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus</span><span style="color: #666666"> </span><span style="color: #d0d0d0">==</span><span style="color: #666666"> </span><span style="color: #ed9d13">&quot;for&quot;</span><span style="color: #d0d0d0">.next()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>We call the <code>next()</code> method six times. Once for every stored posting.</p>
+
+<p>If additionally to chunk ids HotIndexingChunk could store the doc_ids they start with, we could allow seeking access to the potentially interesting chunks and ignore irrelevant ones.</p>
+
+<p>The process would be simpler, too:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #ed9d13">&quot;science&quot;</span><span style="color: #d0d0d0">.next();</span><span style="color: #666666"></span>
+<span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #ed9d13">&quot;for&quot;</span><span style="color: #d0d0d0">.next_seek(&amp;focus)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">==</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #d0d0d0">focus;</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Let&rsquo;s try that.</p>
+
+<h2 id="implementation-details">Implementation Details</h2>
+
+<p><code>HotIndexingChunk</code> now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk.
+Additionally it must give us the DocId of that first encoded posting, because postings are delta encoded and otherwise decoding would not be possible.</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">doc_id_offset(&amp;</span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">doc_id:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #999999; font-style: italic">/*doc_id*/</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #999999; font-style: italic">/*byte_offset*/</span><span style="color: #d0d0d0">)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>For that to be possible, <code>HotIndexingChunk</code> needs to know a bit more about its archived chunks:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #666666">    </span><span style="color: #999999; font-style: italic">//Before:</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">archived_chunks:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #999999; font-style: italic">/*chunk_id*/</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">//Now:</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">archived_chunks:</span><span style="color: #666666"> </span><span style="color: #24909d">Vec</span><span style="color: #d0d0d0">&lt;(</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #999999; font-style: italic">/*doc_id*/</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u16</span><span style="color: #999999; font-style: italic">/*offset*/</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u32</span><span style="color: #999999; font-style: italic">/*chunk_id*/</span><span style="color: #d0d0d0">)&gt;</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>Also, we need capabilities to seek to a certain byte position while reading from a HotIndexingChunk:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">struct</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ChunkRef&lt;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">read_ptr:</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">,</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">chunk:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #666666"> </span><span style="color: #d0d0d0">HotIndexingChunk,</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">archive:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #666666"> </span><span style="color: #24909d">Box</span><span style="color: #d0d0d0">&lt;Storage&lt;IndexingChunk&gt;&gt;,</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+
+<span style="color: #6ab825; font-weight: bold">impl</span><span style="color: #d0d0d0">&lt;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">io::Seek</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">for</span><span style="color: #666666"> </span><span style="color: #d0d0d0">ChunkRef&lt;</span><span style="color: #bbbbbb">&#39;a</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">seek(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">style:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">io::SeekFrom)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">io::</span><span style="color: #24909d">Result</span><span style="color: #d0d0d0">&lt;</span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">use</span><span style="color: #666666"> </span><span style="color: #d0d0d0">std::io::SeekFrom;</span><span style="color: #666666"></span>
+<span style="color: #666666">       </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">pos</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">match</span><span style="color: #666666"> </span><span style="color: #d0d0d0">style</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">SeekFrom::Start(n)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.read_ptr</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">n</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">;</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(n)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">SeekFrom::End(n)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.bytes_len()</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">i64</span><span style="color: #666666"> </span><span style="color: #d0d0d0">+</span><span style="color: #666666"> </span><span style="color: #d0d0d0">n,</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #d0d0d0">SeekFrom::Current(n)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.read_ptr</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">i64</span><span style="color: #666666"> </span><span style="color: #d0d0d0">+</span><span style="color: #666666"> </span><span style="color: #d0d0d0">n,</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">};</span><span style="color: #666666"></span>
+
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">pos</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&lt;</span><span style="color: #666666"> </span><span style="color: #3677a9">0</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #24909d">Err</span><span style="color: #d0d0d0">(io::Error::new(io::ErrorKind::InvalidInput,</span><span style="color: #666666"></span>
+<span style="color: #666666">                           </span><span style="color: #ed9d13">&quot;invalid seek to a negative position&quot;</span><span style="color: #d0d0d0">))</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">else</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.read_ptr</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">pos</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">usize</span><span style="color: #d0d0d0">;</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #24909d">Ok</span><span style="color: #d0d0d0">(</span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.read_ptr</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666">   </span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>We can now determine the byte-offset where it is sensible to look for a DocId and can seek to it.
+Now we need a way to express this throughout the query execution process:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">pub</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">trait</span><span style="color: #666666"> </span><span style="color: #d0d0d0">SeekingIterator</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">type</span><span style="color: #666666"> </span><span style="color: #d0d0d0">Item;</span><span style="color: #666666"></span>
+
+<span style="color: #666666">    </span><span style="color: #ed9d13">/// Yields an Item that is &gt;= the passed argument or None if no such element exists</span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next_seek(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;Self::Item)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Option</span><span style="color: #d0d0d0">&lt;Self::Item&gt;;</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<p>And implement it for <code>PostingDecoder</code>:</p>
+<div class="highlight" style="background: #202020"><pre style="line-height: 125%"><span></span><span style="color: #6ab825; font-weight: bold">fn</span><span style="color: #666666"> </span><span style="color: #d0d0d0">next_seek(&amp;</span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">other:</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&amp;Self::Item)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">-&gt;</span><span style="color: #666666"> </span><span style="color: #24909d">Option</span><span style="color: #d0d0d0">&lt;Self::Item&gt;</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Check if the iterator is already too far advanced.        </span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.last_doc_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&gt;=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*other.doc_id()</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.next();</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Get the doc_id and offset for the next sensible searching position</span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">(doc_id,</span><span style="color: #666666"> </span><span style="color: #d0d0d0">offset)</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.decoder.underlying().doc_id_offset(other.doc_id());</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Seek to the offset</span>
+<span style="color: #666666">    </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.decoder.seek(SeekFrom::Start(offset</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">as</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">u64</span><span style="color: #d0d0d0">)).unwrap();</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Decode the next posting</span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #6ab825; font-weight: bold">mut</span><span style="color: #666666"> </span><span style="color: #d0d0d0">v</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">try_option!(</span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.next());</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// DocId is corrupt, because delta encoding is obviously not compatible with seeking</span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// So overwrite it with the doc_id given to us</span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">v.</span><span style="color: #3677a9">0</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">doc_id;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Store it for further decoding</span>
+<span style="color: #666666">    </span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.last_doc_id</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">doc_id;</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// If this seek already yielded the relevant result, return it</span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">v</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&gt;=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*other</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #24909d">Some</span><span style="color: #d0d0d0">(v);</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #999999; font-style: italic">// Otherwise continue to decode </span>
+<span style="color: #666666">    </span><span style="color: #6ab825; font-weight: bold">loop</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">let</span><span style="color: #666666"> </span><span style="color: #d0d0d0">v</span><span style="color: #666666"> </span><span style="color: #d0d0d0">=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">try_option!(</span><span style="color: #24909d">self</span><span style="color: #d0d0d0">.next());</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #6ab825; font-weight: bold">if</span><span style="color: #666666"> </span><span style="color: #d0d0d0">v</span><span style="color: #666666"> </span><span style="color: #d0d0d0">&gt;=</span><span style="color: #666666"> </span><span style="color: #d0d0d0">*other</span><span style="color: #666666"> </span><span style="color: #d0d0d0">{</span><span style="color: #666666"></span>
+<span style="color: #666666">            </span><span style="color: #6ab825; font-weight: bold">return</span><span style="color: #666666"> </span><span style="color: #24909d">Some</span><span style="color: #d0d0d0">(v);</span><span style="color: #666666"></span>
+<span style="color: #666666">        </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #666666">    </span><span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+<span style="color: #d0d0d0">}</span><span style="color: #666666"></span>
+</pre></div>
+
+<h2 id="conclusion">Conclusion</h2>
+
+<p>This measure improves query execution performance especially for similar cases to the one showed above: (&ldquo;seldom_term&rdquo; AND &ldquo;frequent_term&rdquo;).</p>
+
+<p>We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some <code>IndexingChunk</code>s in certain situations.
+This will result in far better performance when <code>IndexingChunk</code>s are not in memory but on disk or stored somewhere on the network.</p>
+
+<p>The next step will be to lazily decode positions. Positions are needed only for positional queries and then only if document ids match. So our current method, to decode them every time we look at a DocId is wrong.</p>
+
+    </div>
+  </article>
+
+</main>
+
+      <footer class="footer">
+        <ul class="footer-links">
+
+        </ul>
+      </footer>
+
+    </div>
+  </body>
+</html>
+

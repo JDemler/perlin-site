@@ -6,8 +6,233 @@
     <description>Recent content on Perlin - Information Retrieval</description>
     <generator>Hugo -- gohugo.io</generator>
     <language>en-us</language>
-    <lastBuildDate>Wed, 19 Oct 2016 10:03:10 +0200</lastBuildDate>
+    <lastBuildDate>Thu, 17 Nov 2016 12:50:39 +0100</lastBuildDate>
     <atom:link href="https://www.perlin-ir.org/index.xml" rel="self" type="application/rss+xml" />
+    
+    <item>
+      <title>Don&#39;t Decode Everything</title>
+      <link>https://www.perlin-ir.org/post/dont-decode-everything/</link>
+      <pubDate>Thu, 17 Nov 2016 12:50:39 +0100</pubDate>
+      
+      <guid>https://www.perlin-ir.org/post/dont-decode-everything/</guid>
+      <description>
+
+&lt;p&gt;Perlin is a library with the aim to provide information retrieval functionality in a performant and understandable manner. &lt;br /&gt;
+This blog post describes how query execution speed was improved after changes to the underlying data structures.&lt;/p&gt;
+
+&lt;hr /&gt;
+
+&lt;h2 id=&#34;recap&#34;&gt;Recap&lt;/h2&gt;
+
+&lt;p&gt;As discussed in the &lt;a href=&#34;https://www.perlin-ir.org/post/index-50percent-faster/&#34;&gt;last blog post&lt;/a&gt;, to allow faster indexing, the data structures that store postings had to change.
+Listings are not stored anymore in continuous space of memory, but rather in chunks with static sizes.
+This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new junk is allocated.
+Additionally, we distinguish between hot chunks (chunks that represent the end of a listing) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.&lt;/p&gt;
+
+&lt;p&gt;The following chart illustrates the idea. Term 0 occurs often in this collection. It needs five chunks (&lt;code&gt;HotIndexingChunk&lt;/code&gt; #0, &lt;code&gt;IndexingChunk&lt;/code&gt; #0, #1, #6 and #7) to store its listing.
+The chunks hold delta- and vbyte encoded postings in ascending order (&lt;code&gt;IndexingChunk&lt;/code&gt; #0 &amp;gt;= &lt;code&gt;IndexingChunk&lt;/code&gt; #1 &amp;hellip; &amp;gt;= &lt;code&gt;HotIndexingChunk&lt;/code&gt; #0):&lt;/p&gt;
+
+&lt;p&gt;Note, that indexing chunks for this particular term_id are not adjacent to each other in memory.
+But, more importantly, &lt;code&gt;HotIndexingChunk&lt;/code&gt;s, the ones that are frequently written to during the indexing process are close together in memory and will often be accessed in predictable manner.&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;                                                Archive
+
+ +--------------------------+              +------------------+
+ |   HotIndexingChunk       +--------------&amp;gt; IndexingChunk #0 |
+ |   for term_id 0          |       |      +------------------+
+ +--------------------------+       +------&amp;gt; IndexingChunk #1 |
+ |   HotIndexingChunk       |       |      +------------------+
+ |   for term_id 1          +--------------&amp;gt; IndexingChunk #2 |
+ +--------------------------+       |      +------------------+
+ |   HotIndexingChunk       +--------------&amp;gt; IndexingChunk #3 |
+ |   for term_id 2          |       |      +------------------+
+ +--------------------------+       | +----&amp;gt; IndexingChunk #4 |
+ |   HotIndexingChunk       +---------+    +------------------+
+ |   for term_id 3          |       | +----&amp;gt; IndexingChunk #5 |
+ +--------------------------+       |      +------------------+
+                                    +------&amp;gt; IndexingChunk #6 |
+                                    |      +------------------+
+                                    +------&amp;gt; IndexingChunk #7 |
+                                           +------------------+
+
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&#34;query-execution-performance&#34;&gt;Query Execution Performance&lt;/h2&gt;
+
+&lt;p&gt;Comparing this data structure to the old implementation (just storing the postings in vectors (see &lt;a href=&#34;post/indexing-memory-access/&#34;&gt;Indexing Memory Access&lt;/a&gt;), this is far more complicated and takes time to decode.
+Unsurprisingly, query execution performance has thus dropped quite a bit.
+The first implementation after the rebuild of the indexing process just decoded the whole listing for every query term eagerly. This was far from optimal, especially because perlin allows lazy query execution.&lt;/p&gt;
+
+&lt;h3 id=&#34;lazy-decoding&#34;&gt;Lazy Decoding&lt;/h3&gt;
+
+&lt;p&gt;The first step for improvement was obvious. Instead of decoding the whole listing at once and storing it in a &lt;code&gt;Vec&lt;/code&gt;, just hand the query execution machinery an &lt;code&gt;Iterator&lt;/code&gt; for every query term that decodes the postings when necessary.&lt;/p&gt;
+
+&lt;p&gt;This iterator holds a reference to the corresponding &lt;code&gt;HotIndexingChunk&lt;/code&gt; as well as one to the archive. While advancing the iterator, it reads as many bytes as needed to decode the next posting from an archived chunk or the &lt;code&gt;HotIndexingChunk&lt;/code&gt;.&lt;/p&gt;
+
+&lt;p&gt;Changing the decoding from eager to lazy improved query execution performance for queries that are only interested in a small portion of results.&lt;/p&gt;
+
+&lt;p&gt;The question now arises, if we can also improve query execution performance for the general case.&lt;/p&gt;
+
+&lt;h3 id=&#34;don-t-look-at-everything&#34;&gt;Don&amp;rsquo;t look at everything&lt;/h3&gt;
+
+&lt;p&gt;When asked why grep is so fast, Mike Haertel responded with a &lt;a href=&#34;https://lists.freebsd.org/pipermail/freebsd-current/2010-August/019310.html&#34;&gt;lengthy email&lt;/a&gt;. His key idea in this email is that &amp;ldquo;to make[..] programs fast is to make them practically do nothing.&amp;rdquo;&lt;/p&gt;
+
+&lt;p&gt;Can we apply this idea to our case?&lt;/p&gt;
+
+&lt;p&gt;Let&amp;rsquo;s assume following query:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;(&amp;quot;for&amp;quot; AND &amp;quot;science&amp;quot;)
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&amp;ldquo;for&amp;rdquo; is a common term. It&amp;rsquo;s listing will be spread over several &lt;code&gt;IndexingChunk&lt;/code&gt;s. &amp;ldquo;science&amp;rdquo; on the other hand, will probably occur at least a magnitude less often than &amp;ldquo;for&amp;rdquo;.&lt;/p&gt;
+
+&lt;p&gt;Consider following collection:&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;doc_0: &amp;quot;For a long time, people have been studying the stars&amp;quot;
+doc_1: &amp;quot;The search for life on Mars is ongoing&amp;quot;
+doc_2: &amp;quot;Jupiter can be seen with the naked eye, for it is the largest of the planets&amp;quot;
+doc_3: &amp;quot;Venus seems uninhabitable for human beings&amp;quot;
+doc_4: &amp;quot;He exclaimed For Science! while lithobraking on Pluto&amp;quot;
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;For this very small collection, the listings for &amp;ldquo;for&amp;rdquo; and &amp;ldquo;science&amp;rdquo; look like this (positions left out for simplicity):&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;              chunk 1  | chunk 2
+           +---+---+-------+---+
+           |   |   |   |   |   |
+  &amp;quot;for&amp;quot;    | 0 | 1 | 2 | 3 | 4 |
+           |   |   |   |   |   |
+           +---+---+---+---+---+
+
+           +---+
+           |   |
+&amp;quot;science&amp;quot;  | 4 |
+           |   |
+           +---+
+
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;&amp;ldquo;for&amp;rdquo; occurs in document 0, 1, 2, 3 and 4 while &amp;ldquo;science&amp;rdquo; only occurs in document 4.&lt;/p&gt;
+
+&lt;p&gt;Assume now further, that the listing of &amp;ldquo;for&amp;rdquo; is spread over two chunks.&lt;/p&gt;
+
+&lt;p&gt;When executing the query, the old way to do this is to look at every posting of every query term.
+In this case the process would executed as follows (pseudo-code for clarity):&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;science&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;loop&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;==&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;for&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;We call the &lt;code&gt;next()&lt;/code&gt; method six times. Once for every stored posting.&lt;/p&gt;
+
+&lt;p&gt;If additionally to chunk ids HotIndexingChunk could store the doc_ids they start with, we could allow seeking access to the potentially interesting chunks and ignore irrelevant ones.&lt;/p&gt;
+
+&lt;p&gt;The process would be simpler, too:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;science&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next();&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;for&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next_seek(&amp;amp;focus)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;==&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;focus;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;Let&amp;rsquo;s try that.&lt;/p&gt;
+
+&lt;h2 id=&#34;implementation-details&#34;&gt;Implementation Details&lt;/h2&gt;
+
+&lt;p&gt;&lt;code&gt;HotIndexingChunk&lt;/code&gt; now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk.
+Additionally it must give us the DocId of that first encoded posting, because postings are delta encoded and otherwise decoding would not be possible.&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id_offset(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*doc_id*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*byte_offset*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;For that to be possible, &lt;code&gt;HotIndexingChunk&lt;/code&gt; needs to know a bit more about its archived chunks:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//Before:&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;archived_chunks:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u32&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*chunk_id*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;//Now:&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;archived_chunks:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Vec&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*doc_id*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u16&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*offset*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u32&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*chunk_id*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;Also, we need capabilities to seek to a certain byte position while reading from a HotIndexingChunk:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;struct&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;ChunkRef&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #bbbbbb&#34;&gt;&amp;#39;a&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;read_ptr:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;chunk:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #bbbbbb&#34;&gt;&amp;#39;a&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;HotIndexingChunk,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;archive:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #bbbbbb&#34;&gt;&amp;#39;a&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Box&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;Storage&amp;lt;IndexingChunk&amp;gt;&amp;gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+
+&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;impl&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #bbbbbb&#34;&gt;&amp;#39;a&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;io::Seek&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;for&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;ChunkRef&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #bbbbbb&#34;&gt;&amp;#39;a&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;seek(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;style:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;io::SeekFrom)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;io::&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Result&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;use&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;std::io::SeekFrom;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;       &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;pos&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;match&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;style&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SeekFrom::Start(n)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.read_ptr&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;n&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Ok&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(n)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SeekFrom::End(n)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.bytes_len()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;i64&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;+&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;n,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SeekFrom::Current(n)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.read_ptr&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;i64&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;+&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;n,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;};&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;pos&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;0&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Err&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(io::Error::new(io::ErrorKind::InvalidInput,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;                           &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;&amp;quot;invalid seek to a negative position&amp;quot;&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;))&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;else&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.read_ptr&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;pos&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Ok&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.read_ptr&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;   &lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;We can now determine the byte-offset where it is sensible to look for a DocId and can seek to it.
+Now we need a way to express this throughout the query execution process:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;trait&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;SeekingIterator&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;type&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;Item;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #ed9d13&#34;&gt;/// Yields an Item that is &amp;gt;= the passed argument or None if no such element exists&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next_seek(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;Self::Item)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Option&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;Self::Item&amp;gt;;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;p&gt;And implement it for &lt;code&gt;PostingDecoder&lt;/code&gt;:&lt;/p&gt;
+&lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;next_seek(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;other:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;Self::Item)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Option&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;lt;Self::Item&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Check if the iterator is already too far advanced.        &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.last_doc_id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;*other.doc_id()&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next();&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Get the doc_id and offset for the next sensible searching position&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(doc_id,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;offset)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.decoder.underlying().doc_id_offset(other.doc_id());&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Seek to the offset&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.decoder.seek(SeekFrom::Start(offset&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;as&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)).unwrap();&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Decode the next posting&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;mut&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;v&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;try_option!(&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next());&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// DocId is corrupt, because delta encoding is obviously not compatible with seeking&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// So overwrite it with the doc_id given to us&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;v.&lt;/span&gt;&lt;span style=&#34;color: #3677a9&#34;&gt;0&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Store it for further decoding&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.last_doc_id&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// If this seek already yielded the relevant result, return it&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;v&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;*other&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Some&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(v);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;// Otherwise continue to decode &lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;loop&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;let&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;v&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;try_option!(&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;.next());&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;if&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;v&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;gt;=&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;*other&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;            &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;return&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;Some&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(v);&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;        &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
+&lt;/pre&gt;&lt;/div&gt;
+
+&lt;h2 id=&#34;conclusion&#34;&gt;Conclusion&lt;/h2&gt;
+
+&lt;p&gt;This measure improves query execution performance especially for similar cases to the one showed above: (&amp;ldquo;seldom_term&amp;rdquo; AND &amp;ldquo;frequent_term&amp;rdquo;).&lt;/p&gt;
+
+&lt;p&gt;We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some &lt;code&gt;IndexingChunk&lt;/code&gt;s in certain situations.
+This will result in far better performance when &lt;code&gt;IndexingChunk&lt;/code&gt;s are not in memory but on disk or stored somewhere on the network.&lt;/p&gt;
+
+&lt;p&gt;The next step will be to lazily decode positions. Positions are needed only for positional queries and then only if document ids match. So our current method, to decode them every time we look at a DocId is wrong.&lt;/p&gt;
+</description>
+    </item>
     
     <item>
       <title>Index 50% Faster!</title>
