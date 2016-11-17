@@ -24,10 +24,11 @@ This blog post describes how query execution speed was improved after changes to
 
 &lt;h2 id=&#34;recap&#34;&gt;Recap&lt;/h2&gt;
 
-&lt;p&gt;As discussed in the &lt;a href=&#34;https://www.perlin-ir.org/post/index-50percent-faster/&#34;&gt;last blog post&lt;/a&gt;, to allow faster indexing, the data structures that store postings had to change.
+&lt;p&gt;As discussed in the &lt;a href=&#34;https://www.perlin-ir.org/post/index-50percent-faster/&#34;&gt;last blog post&lt;/a&gt;, to allow faster indexing, the data structures that store postings had to change. &lt;br /&gt;
 Listings are not stored anymore in continuous space of memory, but rather in chunks with static sizes.
-This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new junk is allocated.
-Additionally, we distinguish between hot chunks (chunks that represent the end of a listing) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.&lt;/p&gt;
+This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new chunk is allocated. &lt;/p&gt;
+
+&lt;p&gt;Additionally, we distinguish between hot chunks (chunks that represent the end of a listing and will be written to) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.&lt;/p&gt;
 
 &lt;p&gt;The following chart illustrates the idea. Term 0 occurs often in this collection. It needs five chunks (&lt;code&gt;HotIndexingChunk&lt;/code&gt; #0, &lt;code&gt;IndexingChunk&lt;/code&gt; #0, #1, #6 and #7) to store its listing.
 The chunks hold delta- and vbyte encoded postings in ascending order (&lt;code&gt;IndexingChunk&lt;/code&gt; #0 &amp;gt;= &lt;code&gt;IndexingChunk&lt;/code&gt; #1 &amp;hellip; &amp;gt;= &lt;code&gt;HotIndexingChunk&lt;/code&gt; #0):&lt;/p&gt;
@@ -59,8 +60,8 @@ But, more importantly, &lt;code&gt;HotIndexingChunk&lt;/code&gt;s, the ones that
 
 &lt;h2 id=&#34;query-execution-performance&#34;&gt;Query Execution Performance&lt;/h2&gt;
 
-&lt;p&gt;Comparing this data structure to the old implementation (just storing the postings in vectors (see &lt;a href=&#34;post/indexing-memory-access/&#34;&gt;Indexing Memory Access&lt;/a&gt;), this is far more complicated and takes time to decode.
-Unsurprisingly, query execution performance has thus dropped quite a bit.
+&lt;p&gt;Comparing this data structure to the old implementation (just storing the postings in vectors (see &lt;a href=&#34;post/indexing-memory-access/&#34;&gt;Indexing Memory Access&lt;/a&gt;), this is far more complicated and takes time to decode. &lt;br /&gt;
+Unsurprisingly, query execution performance has thus dropped quite a bit.&lt;br /&gt;
 The first implementation after the rebuild of the indexing process just decoded the whole listing for every query term eagerly. This was far from optimal, especially because perlin allows lazy query execution.&lt;/p&gt;
 
 &lt;h3 id=&#34;lazy-decoding&#34;&gt;Lazy Decoding&lt;/h3&gt;
@@ -137,11 +138,15 @@ In this case the process would executed as follows (pseudo-code for clarity):&lt
 &lt;span style=&#34;color: #d0d0d0&#34;&gt;}&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
 &lt;/pre&gt;&lt;/div&gt;
 
+&lt;p&gt;In total we only need to call next three times: &lt;br /&gt;
+&lt;code&gt;&amp;quot;science&amp;quot;.next()&lt;/code&gt;&lt;br /&gt;
+&lt;code&gt;&amp;quot;for&amp;quot;.next_seek()&lt;/code&gt; wich will call &lt;code&gt;next()&lt;/code&gt; internally two times (first time yielding 3 and second time yielding 4)&lt;/p&gt;
+
 &lt;p&gt;Let&amp;rsquo;s try that.&lt;/p&gt;
 
 &lt;h2 id=&#34;implementation-details&#34;&gt;Implementation Details&lt;/h2&gt;
 
-&lt;p&gt;&lt;code&gt;HotIndexingChunk&lt;/code&gt; now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk.
+&lt;p&gt;&lt;code&gt;HotIndexingChunk&lt;/code&gt; now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk. &lt;br /&gt;
 Additionally it must give us the DocId of that first encoded posting, because postings are delta encoded and otherwise decoding would not be possible.&lt;/p&gt;
 &lt;div class=&#34;highlight&#34; style=&#34;background: #202020&#34;&gt;&lt;pre style=&#34;line-height: 125%&#34;&gt;&lt;span&gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;    &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;pub&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;fn&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id_offset(&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #24909d&#34;&gt;self&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;doc_id:&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;&amp;amp;&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;-&amp;gt;&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;(&lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;u64&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*doc_id*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;,&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #6ab825; font-weight: bold&#34;&gt;usize&lt;/span&gt;&lt;span style=&#34;color: #999999; font-style: italic&#34;&gt;/*byte_offset*/&lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;)&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt; &lt;/span&gt;&lt;span style=&#34;color: #d0d0d0&#34;&gt;{&lt;/span&gt;&lt;span style=&#34;color: #666666&#34;&gt;&lt;/span&gt;
 &lt;/pre&gt;&lt;/div&gt;
@@ -227,7 +232,7 @@ Now we need a way to express this throughout the query execution process:&lt;/p&
 
 &lt;p&gt;This measure improves query execution performance especially for similar cases to the one showed above: (&amp;ldquo;seldom_term&amp;rdquo; AND &amp;ldquo;frequent_term&amp;rdquo;).&lt;/p&gt;
 
-&lt;p&gt;We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some &lt;code&gt;IndexingChunk&lt;/code&gt;s in certain situations.
+&lt;p&gt;We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some &lt;code&gt;IndexingChunk&lt;/code&gt;s in certain situations. &lt;br /&gt;
 This will result in far better performance when &lt;code&gt;IndexingChunk&lt;/code&gt;s are not in memory but on disk or stored somewhere on the network.&lt;/p&gt;
 
 &lt;p&gt;The next step will be to lazily decode positions. Positions are needed only for positional queries and then only if document ids match. So our current method, to decode them every time we look at a DocId is wrong.&lt;/p&gt;

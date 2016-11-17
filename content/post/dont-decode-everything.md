@@ -11,10 +11,11 @@ This blog post describes how query execution speed was improved after changes to
 
 ## Recap 
 
-As discussed in the [last blog post](/post/index-50percent-faster/), to allow faster indexing, the data structures that store postings had to change. 
+As discussed in the [last blog post](/post/index-50percent-faster/), to allow faster indexing, the data structures that store postings had to change. \
 Listings are not stored anymore in continuous space of memory, but rather in chunks with static sizes.
-This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new junk is allocated.
-Additionally, we distinguish between hot chunks (chunks that represent the end of a listing) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.
+This allows for much faster writing to the listings as they do not have to be moved inside memory. If a listing grows larger than the size chunk, a new chunk is allocated. \
+
+Additionally, we distinguish between hot chunks (chunks that represent the end of a listing and will be written to) and archived chunk (chunks that represent anything but the end of a listing). This enables continuous memory access during the indexing process.
 
 
 The following chart illustrates the idea. Term 0 occurs often in this collection. It needs five chunks (`HotIndexingChunk` #0, `IndexingChunk` #0, #1, #6 and #7) to store its listing. 
@@ -49,8 +50,8 @@ But, more importantly, `HotIndexingChunk`s, the ones that are frequently written
 
 
 ## Query Execution Performance
-Comparing this data structure to the old implementation (just storing the postings in vectors (see [Indexing Memory Access](post/indexing-memory-access/)), this is far more complicated and takes time to decode.
-Unsurprisingly, query execution performance has thus dropped quite a bit.
+Comparing this data structure to the old implementation (just storing the postings in vectors (see [Indexing Memory Access](post/indexing-memory-access/)), this is far more complicated and takes time to decode. \
+Unsurprisingly, query execution performance has thus dropped quite a bit.\
 The first implementation after the rebuild of the indexing process just decoded the whole listing for every query term eagerly. This was far from optimal, especially because perlin allows lazy query execution.
 
 ### Lazy Decoding
@@ -130,12 +131,16 @@ if "for".next_seek(&focus) == focus {
 }
 ```
 
+In total we only need to call next three times: \
+`"science".next()`\
+`"for".next_seek()` wich will call `next()` internally two times (first time yielding 3 and second time yielding 4)
+
 Let's try that.
 
 
 ## Implementation Details
 
-`HotIndexingChunk` now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk.
+`HotIndexingChunk` now needs new capabilities. It needs a method that takes a DocId and it returns the relevant chunk, and the byte offset where the first posting of this chunk is encoded. This is needed because encoded positions can overflow a chunk. \
 Additionally it must give us the DocId of that first encoded posting, because postings are delta encoded and otherwise decoding would not be possible.
 
 ```rust 
@@ -230,7 +235,7 @@ fn next_seek(&mut self, other: &Self::Item) -> Option<Self::Item> {
 ## Conclusion
 This measure improves query execution performance especially for similar cases to the one showed above: ("seldom_term" AND "frequent_term").
 
-We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some `IndexingChunk`s in certain situations. 
+We now not only have capabilities to jump to certain postings, which is a huge help for implementing operators, but also do not access some `IndexingChunk`s in certain situations. \
 This will result in far better performance when `IndexingChunk`s are not in memory but on disk or stored somewhere on the network.
 
 The next step will be to lazily decode positions. Positions are needed only for positional queries and then only if document ids match. So our current method, to decode them every time we look at a DocId is wrong.
